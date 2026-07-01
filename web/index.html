@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ShellPilot</title>
+    <link rel="stylesheet" href="/styles.css?v=20260701-modes" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">&gt;_</div>
+          <div>
+            <h1>ShellPilot</h1>
+            <p>Bash Agent</p>
+          </div>
+        </div>
+
+        <nav class="nav-list" aria-label="ShellPilot sections">
+          <button class="nav-item active" type="button"><span>⌂</span>Cockpit</button>
+          <button class="nav-item" type="button"><span>↺</span>History</button>
+          <button class="nav-item" type="button"><span>⌘</span>Git</button>
+          <button class="nav-item" type="button"><span>□</span>Files</button>
+          <button class="nav-item" type="button"><span>≡</span>Logs</button>
+          <button class="nav-item" type="button"><span>⚙</span>Settings</button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="mini-status">
+            <span class="status-dot"></span>
+            <div>
+              <strong>Copilot 365</strong>
+              <span id="sessionStatus">Not opened</span>
+            </div>
+          </div>
+          <button class="secondary full" id="newSessionBtn" type="button">New Session</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="workspace-bar">
+            <span class="workspace-icon">□</span>
+            <input id="workspaceInput" type="text" spellcheck="false" aria-label="Workspace path" />
+          </div>
+          <div class="top-actions">
+            <span id="connectionPill" class="pill">Copilot not opened</span>
+            <span id="runStatus" class="pill neutral">Idle</span>
+            <span class="avatar">SP</span>
+          </div>
+        </header>
+
+        <section class="cockpit-grid">
+          <section class="main-column">
+            <section class="card task-card">
+              <div class="card-header">
+                <div>
+                  <h2>Mission</h2>
+                  <p>Prompt ShellPilot, then approve anything that writes, downloads, or looks risky.</p>
+                </div>
+                <span id="turnStatus" class="soft-badge">Turn 0</span>
+              </div>
+
+              <label for="taskInput">Task prompt</label>
+              <textarea id="taskInput" rows="4" placeholder="Example: inspect this repo and tell me what command should run next"></textarea>
+
+              <details class="advanced-config">
+                <summary>Session settings</summary>
+                <div class="config-grid">
+                  <label>
+                    Copilot URL
+                    <input id="urlInput" type="text" spellcheck="false" />
+                  </label>
+                  <label>
+                    Browser profile
+                    <input id="profileInput" type="text" spellcheck="false" />
+                  </label>
+                  <label>
+                    Max turns
+                    <input id="maxTurnsInput" type="number" min="1" max="40" value="12" />
+                  </label>
+                  <label>
+                    Command timeout
+                    <input id="commandTimeoutInput" type="number" min="1" max="3600" value="120" />
+                  </label>
+                  <label>
+                    Copilot timeout
+                    <input id="copilotTimeoutInput" type="number" min="10" max="900" value="180" />
+                  </label>
+                  <label>
+                    Capture timeout
+                    <input id="captureTimeoutInput" type="number" min="4" max="120" value="15" />
+                  </label>
+                </div>
+              </details>
+
+              <div class="button-row">
+                <button id="openBtn" type="button" class="secondary">Open Copilot / Login</button>
+                <button id="checkBtn" type="button" class="secondary">Check Session</button>
+                <button id="runBtn" type="button">Run</button>
+                <button id="stopBtn" type="button" class="danger" disabled>Stop</button>
+              </div>
+            </section>
+
+            <section id="approvalPanel" class="card approval hidden">
+              <div class="card-header">
+                <div>
+                  <h2>Approval Required</h2>
+                  <p id="approvalReason"></p>
+                </div>
+              </div>
+              <pre id="approvalCommand" class="command-line"></pre>
+              <div class="button-row right">
+                <button id="denyBtn" type="button" class="danger">Deny</button>
+                <button id="approveBtn" type="button">Approve</button>
+              </div>
+            </section>
+
+            <section class="card agent-card">
+              <div class="card-header">
+                <div class="title-with-icon">
+                  <span class="spark">✦</span>
+                  <div>
+                    <h2>Agent Turn</h2>
+                    <p>Copilot proposes the next Bash command.</p>
+                  </div>
+                </div>
+                <span id="turnBadge" class="soft-badge">Turn #0</span>
+              </div>
+
+              <pre id="commandText" class="code-block">(no command yet)</pre>
+
+              <div class="decision-strip">
+                <div>
+                  <span>Risk</span>
+                  <strong id="computedRisk" class="risk">none</strong>
+                </div>
+                <div>
+                  <span>Declared</span>
+                  <strong id="declaredRisk">none</strong>
+                </div>
+                <div>
+                  <span>Reason</span>
+                  <strong id="commandReason">none</strong>
+                </div>
+              </div>
+            </section>
+
+            <section class="card output-card">
+              <div class="card-header">
+                <div class="title-with-icon">
+                  <span class="terminal-icon">&gt;</span>
+                  <div>
+                    <h2>Command Output</h2>
+                    <p id="outputSubtitle">Waiting for a command result.</p>
+                  </div>
+                </div>
+                <div class="result-status">
+                  <span id="outputState">Idle</span>
+                  <span id="duration">-</span>
+                </div>
+              </div>
+
+              <pre id="stdoutBox" class="terminal-box"></pre>
+              <pre id="stderrBox" class="terminal-box stderr"></pre>
+
+              <div class="result-grid">
+                <div><span>Exit Code</span><strong id="exitCode">-</strong></div>
+                <div><span>Timeout</span><strong id="timedOut">-</strong></div>
+                <div><span>Approved</span><strong id="approved">-</strong></div>
+                <div><span>CWD</span><strong id="cwdValue">-</strong></div>
+              </div>
+            </section>
+
+            <section class="card next-card">
+              <div class="next-icon">➤</div>
+              <div>
+                <h2>Send result back to Copilot</h2>
+                <p>Every command result is automatically included in the next prompt.</p>
+              </div>
+              <button id="nextTurnBtn" type="button" class="secondary" disabled>Automatic</button>
+            </section>
+
+            <section class="approval-mode card">
+              <div>
+                <h2>Approval Mode</h2>
+                <p>Control which commands need approval</p>
+              </div>
+              <button class="mode-pill active" type="button" data-mode="ask">
+                <strong>Ask for approval</strong>
+                <span>Ask before write, network, dangerous</span>
+              </button>
+              <button class="mode-pill" type="button" data-mode="approve_for_me">
+                <strong>Approve for me</strong>
+                <span>Only ask for dangerous</span>
+              </button>
+              <button class="mode-pill full-access" type="button" data-mode="full_access">
+                <strong>Full access</strong>
+                <span>Run all classified risks</span>
+              </button>
+            </section>
+          </section>
+
+          <aside class="right-rail">
+            <section class="card rail-card">
+              <div class="card-header compact">
+                <h2>Git Status</h2>
+                <button class="icon-button" type="button" data-refresh>↻</button>
+              </div>
+              <div id="gitBranch" class="branch-line">Branch: -</div>
+              <pre id="gitBefore" class="rail-code">(none)</pre>
+            </section>
+
+            <section class="card rail-card">
+              <div class="card-header compact">
+                <h2>Git Diff (stat)</h2>
+                <button class="icon-button" type="button" data-refresh>↻</button>
+              </div>
+              <pre id="gitAfter" class="rail-code">(none)</pre>
+            </section>
+
+            <section class="card rail-card">
+              <div class="card-header compact">
+                <h2>Recent Commands</h2>
+              </div>
+              <div id="recentCommands" class="recent-list"></div>
+            </section>
+
+            <section class="card rail-card">
+              <div class="card-header compact">
+                <h2>Live Events</h2>
+              </div>
+              <div id="eventLog" class="event-log"></div>
+            </section>
+          </aside>
+        </section>
+
+        <footer class="run-folder-bar">
+          <span>Run folder</span>
+          <code id="runFolder">(none)</code>
+        </footer>
+      </main>
+    </div>
+
+    <script src="/app.js?v=20260701-modes"></script>
+  </body>
+</html>

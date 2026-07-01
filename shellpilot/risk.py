@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import shlex
 
 from .models import RiskAssessment, RiskLevel
@@ -72,7 +71,7 @@ def classify_command(command: str) -> RiskAssessment:
     if any(pattern in lowered for pattern in DANGEROUS_GIT_PATTERNS):
         return RiskAssessment(RiskLevel.DANGEROUS, True, "Dangerous Git cleanup/reset command.")
 
-    pipeline_parts = [part.strip() for part in command.split("|") if part.strip()]
+    pipeline_parts = _split_unquoted_pipes(command)
     if not pipeline_parts:
         return RiskAssessment(RiskLevel.DANGEROUS, False, "No executable command found.")
 
@@ -90,13 +89,93 @@ def requires_approval(risk: RiskLevel) -> bool:
 
 
 def _has_blocked_command_separator(command: str) -> bool:
-    if "\n" in command or "\r" in command:
-        return True
-    return any(token in command for token in (";", "&&", "||"))
+    in_single = False
+    in_double = False
+    escape = False
+    idx = 0
+
+    while idx < len(command):
+        char = command[idx]
+        if escape:
+            escape = False
+            idx += 1
+            continue
+        if char == "\\" and not in_single:
+            escape = True
+            idx += 1
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            idx += 1
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            idx += 1
+            continue
+        if not in_single and not in_double:
+            if char in {";", "\n", "\r"}:
+                return True
+            if command.startswith("&&", idx) or command.startswith("||", idx):
+                return True
+        idx += 1
+    return False
 
 
 def _has_write_redirection(command: str) -> bool:
-    return bool(re.search(r"(^|[^<])>>?($|\s|\S)", command))
+    in_single = False
+    in_double = False
+    escape = False
+    for idx, char in enumerate(command):
+        if escape:
+            escape = False
+            continue
+        if char == "\\" and not in_single:
+            escape = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if char == ">" and not in_single and not in_double:
+            previous = command[idx - 1] if idx else ""
+            next_char = command[idx + 1] if idx + 1 < len(command) else ""
+            if previous != "<" and next_char != "&":
+                return True
+    return False
+
+
+def _split_unquoted_pipes(command: str) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    in_single = False
+    in_double = False
+    escape = False
+
+    for idx, char in enumerate(command):
+        if escape:
+            escape = False
+            continue
+        if char == "\\" and not in_single:
+            escape = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if char == "|" and not in_single and not in_double:
+            part = command[start:idx].strip()
+            if part:
+                parts.append(part)
+            start = idx + 1
+
+    final_part = command[start:].strip()
+    if final_part:
+        parts.append(final_part)
+    return parts
 
 
 def _classify_single(command: str) -> tuple[RiskLevel, str]:
@@ -197,4 +276,3 @@ def _max_risk(left: RiskLevel, right: RiskLevel) -> RiskLevel:
         RiskLevel.DANGEROUS: 3,
     }
     return left if order[left] >= order[right] else right
-

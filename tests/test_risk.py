@@ -16,6 +16,18 @@ class RiskTests(unittest.TestCase):
         assessment = classify_command("git status --short | cat")
         self.assertEqual(assessment.risk, RiskLevel.READ_ONLY)
 
+    def test_quoted_pipe_does_not_split_pipeline(self) -> None:
+        command = "find . -maxdepth 2 -type f | grep -E 'sfdx-project.json|package.json|README|\\.csv$' | sort"
+        assessment = classify_command(command)
+        self.assertEqual(assessment.risk, RiskLevel.READ_ONLY)
+        self.assertTrue(assessment.allowed_shape)
+
+    def test_quoted_python_semicolon_is_not_shell_separator(self) -> None:
+        command = 'python3 -c \'import csv;f=open("account_classified.csv","w");f.close()\''
+        assessment = classify_command(command)
+        self.assertTrue(assessment.allowed_shape)
+        self.assertNotEqual(assessment.reason, "Multiple commands are not allowed.")
+
     def test_write_redirection(self) -> None:
         assessment = classify_command("echo hello > notes.txt")
         self.assertEqual(assessment.risk, RiskLevel.WRITE_FILE)
@@ -36,4 +48,3 @@ class RiskTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

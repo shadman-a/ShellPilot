@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from shellpilot.decision_parser import DecisionParseError, parse_decision
+from shellpilot.decision_parser import DecisionParseError, decision_prompt, parse_decision
 from shellpilot.models import DecisionAction, RiskLevel
 
 
@@ -30,7 +30,54 @@ class DecisionParserTests(unittest.TestCase):
         with self.assertRaises(DecisionParseError):
             parse_decision('{"action":"command","risk":"read_only"}')
 
+    def test_chat_tail_uses_latest_json_object(self) -> None:
+        response = """
+        older response {"action":"command","command":"pwd","risk":"read_only","reason":"old"}
+        latest response {"action":"command","command":"git status --short","risk":"read_only","reason":"new"}
+        """
+        decision = parse_decision(response)
+        self.assertEqual(decision.command, "git status --short")
+        self.assertEqual(decision.reason, "new")
+
+    def test_jsonish_command_with_unescaped_inner_quotes(self) -> None:
+        response = (
+            '{"action":"command","command":"python3 -c "import csv;'
+            "rows=list(csv.reader(open('account_export.csv')));print(len(rows))"
+            '"","risk":"dangerous","reason":"inspect csv with python"}'
+        )
+        decision = parse_decision(response)
+        self.assertEqual(decision.action, DecisionAction.COMMAND)
+        self.assertIn("python3 -c", decision.command)
+        self.assertEqual(decision.risk, RiskLevel.DANGEROUS)
+
+    def test_jsonish_exec_command_with_unescaped_nested_quotes(self) -> None:
+        response = (
+            '{"action":"command","command":"python3 -c \'exec("import csv\\n'
+            'rows=list(csv.DictReader(open(\\"account_export.csv\\")))")\'",'
+            '"risk":"medium","reason":"create csv"}'
+        )
+        decision = parse_decision(response)
+        self.assertEqual(decision.action, DecisionAction.COMMAND)
+        self.assertIn("python3 -c", decision.command)
+        self.assertIn("exec(", decision.command)
+
+    def test_decision_prompt_compacts_large_git_state(self) -> None:
+        git_state = {
+            "is_git_repo": True,
+            "workspace": "/tmp/work",
+            "git_root": "/tmp/work",
+            "branch": "main",
+            "dirty": True,
+            "status_short": "\n".join(["## main", *[f"?? generated/file_{idx}.txt" for idx in range(100)]]),
+            "diff_stat": "\n".join([f"file_{idx}.py | 10 +-" for idx in range(80)]),
+            "diff_name_status": "\n".join([f"M\tfile_{idx}.py" for idx in range(80)]),
+            "staged_name_status": "",
+        }
+        prompt = decision_prompt(task="test", workspace="/tmp/work", git_state=git_state, previous_result=None, turn=1)
+        self.assertLess(len(prompt), 8000)
+        self.assertIn("status_omitted", prompt)
+        self.assertNotIn("generated/file_99.txt", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
-

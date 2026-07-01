@@ -62,6 +62,8 @@ class ShellPilotLoop:
         self.copilot.call("set_event_logger", event_logger)
         inspected_ok = False
         previous_result: dict[str, Any] | None = None
+        consecutive_decision_errors = 0
+        max_decision_errors = 3
 
         try:
             for turn in range(1, self.max_turns + 1):
@@ -120,6 +122,7 @@ class ShellPilotLoop:
                 try:
                     decision = parse_decision(prompt_result.response_text)
                 except DecisionParseError as exc:
+                    consecutive_decision_errors += 1
                     record = TurnRecord(
                         turn=turn,
                         ts=now_iso(),
@@ -134,11 +137,18 @@ class ShellPilotLoop:
                     previous_result = {
                         "status": "decision_error",
                         "error": str(exc),
-                        "raw_response_excerpt": make_excerpt(prompt_result.response_text, 1200),
+                        "hint": "Return one valid JSON object. Avoid nested double quotes and multiline command strings.",
                     }
                     self._emit("turn_error", record.to_json_record())
+                    if consecutive_decision_errors >= max_decision_errors:
+                        self._emit(
+                            "run_error",
+                            {"error": f"Stopped after {consecutive_decision_errors} consecutive invalid Copilot JSON responses."},
+                        )
+                        return
                     continue
 
+                consecutive_decision_errors = 0
                 if decision.action == DecisionAction.DONE:
                     record = TurnRecord(
                         turn=turn,
@@ -241,13 +251,12 @@ class ShellPilotLoop:
 
     def _result_context(self, record: TurnRecord) -> dict[str, Any]:
         result = dict(record.command_result or {})
-        result["stdout"] = trim_text(str(result.get("stdout") or ""), 6000)
-        result["stderr"] = trim_text(str(result.get("stderr") or ""), 3000)
+        result["stdout"] = trim_text(str(result.get("stdout") or ""), 1500)
+        result["stderr"] = trim_text(str(result.get("stderr") or ""), 1000)
         return {
             "turn": record.turn,
             "decision": record.decision,
             "command_result": result,
-            "git_after": record.git_after,
         }
 
     def _emit(self, event: str, payload: dict[str, Any]) -> None:

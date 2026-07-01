@@ -21,8 +21,8 @@ class GitStateTests(unittest.TestCase):
             state = collect_git_state(temp_dir)
         self.assertTrue(state.is_git_repo)
         self.assertIn("notes.txt", state.status_short)
+        self.assertTrue(state.dirty)
 
 
 if __name__ == "__main__":
     unittest.main()
-

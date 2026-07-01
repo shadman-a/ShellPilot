@@ -92,6 +92,7 @@ class CopilotConnector:
         step_callback: StepCallback | None = None,
     ) -> PromptResult:
         self._ensure_ready(config)
+        self._log("INFO", "prompt_prepared", index=index, total=total, chars=len(prompt))
         return self._run_single_prompt(
             prompt=prompt,
             index=index,
@@ -138,6 +139,8 @@ class CopilotConnector:
                 )
                 if tail_fallback:
                     response_text = self._normalize_tail_fallback_response(response_text)
+                    if self._looks_like_prompt_echo(response_text):
+                        raise RuntimeError("Response capture returned the prompt text instead of Copilot's latest answer.")
                 if not response_text.strip():
                     raise RuntimeError("Could not capture response text from the latest assistant reply.")
 
@@ -183,6 +186,15 @@ class CopilotConnector:
                 result.output_path = str(storage.save_copilot_response(output_paths, result))
 
             self._emit_step(step_callback, f"Saving ({progress})")
+            self._log(
+                "INFO",
+                "prompt_completed",
+                index=index,
+                status=status,
+                duration_s=round(duration, 3),
+                response_chars=len(response_text or ""),
+                tail_fallback=tail_fallback,
+            )
             if status == "stopped":
                 stop_event.set()
             return result
@@ -260,6 +272,22 @@ class CopilotConnector:
         if cleaned.lower().startswith("copilot\n"):
             cleaned = cleaned.split("\n", 1)[-1].strip()
         return cleaned or text
+
+    @staticmethod
+    def _looks_like_prompt_echo(text: str) -> bool:
+        markers = (
+            "Current Git state:",
+            "Previous command result:",
+            "Rules:",
+            "Valid command JSON:",
+            "Valid done JSON:",
+            "You are ShellPilot",
+        )
+        marker_count = sum(1 for marker in markers if marker in text)
+        if marker_count < 2:
+            return False
+        stripped = text.lstrip()
+        return not (stripped.startswith('{"action"') or stripped.startswith("{'action'"))
 
     def _ensure_ready(self, config: RunConfig) -> None:
         page_closed = False
@@ -542,4 +570,3 @@ class CopilotWorker:
             self.call("__close__")
         except Exception:
             pass
-

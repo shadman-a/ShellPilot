@@ -90,7 +90,15 @@ class PromptResult:
         return f"{text[:177]}..."
 
     def to_json_record(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        prompt = str(payload.pop("prompt", "") or "")
+        compact_prompt = " ".join(prompt.split())
+        if len(compact_prompt) > 500:
+            compact_prompt = f"{compact_prompt[:497]}..."
+        payload["prompt_excerpt"] = compact_prompt
+        payload["prompt_chars"] = len(prompt)
+        payload["response_chars"] = len(self.response_text or "")
+        return payload
 
 
 @dataclass(slots=True)
@@ -132,7 +140,7 @@ class GitState:
 
     @property
     def dirty(self) -> bool:
-        return bool(self.status_short.strip() and not self.status_short.strip().startswith("##"))
+        return any(line.strip() and not line.startswith("##") for line in self.status_short.splitlines())
 
     def to_json_record(self) -> dict[str, Any]:
         return asdict(self) | {"dirty": self.dirty}

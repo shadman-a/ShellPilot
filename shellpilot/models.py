@@ -24,6 +24,12 @@ class ApprovalMode(StrEnum):
     FULL_ACCESS = "full_access"
 
 
+class ShellKind(StrEnum):
+    BASH = "bash"
+    POWERSHELL = "powershell"
+    CMD = "cmd"
+
+
 class DecisionAction(StrEnum):
     COMMAND = "command"
     DONE = "done"
@@ -161,6 +167,7 @@ class CommandResult:
     risk_reason: str
     skipped: bool = False
     skip_reason: str = ""
+    shell: str = ShellKind.BASH.value
 
     @property
     def ok(self) -> bool:

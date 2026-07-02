@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from shellpilot.decision_parser import DecisionParseError, decision_prompt, parse_decision
-from shellpilot.models import DecisionAction, RiskLevel
+from shellpilot.models import DecisionAction, RiskLevel, ShellKind
 
 
 class DecisionParserTests(unittest.TestCase):
@@ -77,6 +77,20 @@ class DecisionParserTests(unittest.TestCase):
         self.assertLess(len(prompt), 8000)
         self.assertIn("status_omitted", prompt)
         self.assertNotIn("generated/file_99.txt", prompt)
+
+    def test_decision_prompt_is_shell_aware(self) -> None:
+        git_state = {"is_git_repo": False, "workspace": "/tmp/work"}
+        prompt = decision_prompt(
+            task="test",
+            workspace="/tmp/work",
+            git_state=git_state,
+            previous_result=None,
+            turn=1,
+            shell=ShellKind.POWERSHELL,
+        )
+        self.assertIn("Local command shell:\nPowerShell", prompt)
+        self.assertIn("Get-Location", prompt)
+        self.assertNotIn("Choose exactly one Bash command", prompt)
 
 
 if __name__ == "__main__":

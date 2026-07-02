@@ -5,7 +5,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from shellpilot.models import ApprovalMode, CommandDecision, DecisionAction, RiskLevel
+from shellpilot.models import ApprovalMode, CommandDecision, DecisionAction, RiskLevel, ShellKind
 from shellpilot.web_app import AppState
 
 
@@ -18,6 +18,7 @@ class WebAppStateTests(unittest.TestCase):
         self.assertEqual(payload["session_status"], "not_opened")
         self.assertFalse(payload["running"])
         self.assertEqual(payload["approval_mode"], ApprovalMode.ASK.value)
+        self.assertIn(payload["shell_kind"], {shell.value for shell in ShellKind})
 
     def test_empty_task_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -127,6 +128,33 @@ class WebAppStateTests(unittest.TestCase):
                     state.running = True
                 with self.assertRaises(ValueError):
                     state.new_session()
+            finally:
+                state.copilot.close()
+
+    def test_browse_workspace_lists_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            child = root / "child"
+            child.mkdir()
+            (root / "file.txt").write_text("x", encoding="utf-8")
+            state = AppState(default_workspace=root)
+            try:
+                payload = state.browse_workspace({"path": str(root)})
+            finally:
+                state.copilot.close()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["path"], str(root.resolve()))
+        self.assertIn(str(Path.home()), payload["home"])
+        self.assertIn("roots", payload)
+        self.assertEqual([entry["name"] for entry in payload["entries"]], ["child"])
+
+    def test_invalid_shell_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = AppState(default_workspace=Path(temp_dir))
+            try:
+                with self.assertRaises(ValueError):
+                    state.start_run({"task": "test", "workspace_dir": temp_dir, "shell_kind": "fish"})
             finally:
                 state.copilot.close()
 

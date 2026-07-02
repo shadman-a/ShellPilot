@@ -6,12 +6,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .bash_runner import BashRunner, skipped_result
 from .copilot_connector import CopilotWorker
 from .decision_parser import DecisionParseError, decision_prompt, parse_decision
 from .git_state import collect_git_state
-from .models import ApprovalMode, CommandDecision, DecisionAction, RiskLevel, RunConfig, TurnRecord
+from .models import ApprovalMode, CommandDecision, DecisionAction, RiskLevel, RunConfig, ShellKind, TurnRecord
 from .risk import classify_command
+from .shell_runner import ShellRunner, skipped_result
 from .storage import OutputPaths, append_turn
 from .utils import EventLogger, make_excerpt, now_iso, trim_text
 
@@ -37,6 +37,7 @@ class ShellPilotLoop:
         event_callback: EventCallback,
         approval_callback: ApprovalCallback,
         approval_mode: ApprovalMode = ApprovalMode.ASK,
+        shell_kind: ShellKind = ShellKind.BASH,
         command_timeout_s: int = 120,
         max_turns: int = 12,
     ) -> None:
@@ -45,9 +46,10 @@ class ShellPilotLoop:
         self.event_callback = event_callback
         self.approval_callback = approval_callback
         self.approval_mode = approval_mode
+        self.shell_kind = shell_kind
         self.command_timeout_s = max(1, int(command_timeout_s))
         self.max_turns = max(1, int(max_turns))
-        self.runner = BashRunner()
+        self.runner = ShellRunner(shell_kind)
 
     def run(
         self,
@@ -83,6 +85,7 @@ class ShellPilotLoop:
                     git_state=git_before.to_json_record(),
                     previous_result=previous_result,
                     turn=turn,
+                    shell=self.shell_kind,
                 )
                 prompt_result = self.copilot.call(
                     "send_turn",
@@ -164,7 +167,7 @@ class ShellPilotLoop:
                     self._emit("done", record.to_json_record())
                     return
 
-                assessment = classify_command(decision.command)
+                assessment = classify_command(decision.command, shell=self.shell_kind)
                 approval_required = approval_required_for_risk(self.approval_mode, assessment.risk)
                 inspect_blocked = (
                     assessment.risk == RiskLevel.WRITE_FILE
@@ -190,6 +193,7 @@ class ShellPilotLoop:
                         declared_risk=decision.risk,
                         computed_risk=assessment.risk,
                         risk_reason=assessment.reason,
+                        shell=self.shell_kind,
                     )
                 elif inspect_blocked:
                     command_result = skipped_result(
@@ -199,6 +203,7 @@ class ShellPilotLoop:
                         declared_risk=decision.risk,
                         computed_risk=assessment.risk,
                         risk_reason=assessment.reason,
+                        shell=self.shell_kind,
                     )
                 elif approval_required and not approved:
                     command_result = skipped_result(
@@ -208,6 +213,7 @@ class ShellPilotLoop:
                         declared_risk=decision.risk,
                         computed_risk=assessment.risk,
                         risk_reason=assessment.reason,
+                        shell=self.shell_kind,
                     )
                 else:
                     command_result = self.runner.run(

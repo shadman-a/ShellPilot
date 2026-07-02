@@ -5,7 +5,8 @@ import unittest
 from unittest.mock import patch
 
 from shellpilot.bash_runner import BashRunner
-from shellpilot.models import RiskLevel
+from shellpilot.models import RiskLevel, ShellKind
+from shellpilot.shell_runner import ShellRunner
 
 
 class BashRunnerTests(unittest.TestCase):
@@ -65,7 +66,7 @@ class BashRunnerTests(unittest.TestCase):
         self.assertIn("Shell not found", result.skip_reason)
 
     def test_uses_non_login_shell_to_preserve_path(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch("shellpilot.bash_runner.subprocess.run") as run_mock:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("shellpilot.shell_runner.subprocess.run") as run_mock:
             run_mock.return_value.stdout = ""
             run_mock.return_value.stderr = ""
             run_mock.return_value.returncode = 0
@@ -80,6 +81,40 @@ class BashRunnerTests(unittest.TestCase):
             )
         argv = run_mock.call_args.args[0]
         self.assertEqual(argv[:2], ["/bin/bash", "-c"])
+
+    def test_powershell_argv(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("shellpilot.shell_runner.subprocess.run") as run_mock:
+            run_mock.return_value.stdout = ""
+            run_mock.return_value.stderr = ""
+            run_mock.return_value.returncode = 0
+            ShellRunner(ShellKind.POWERSHELL, shell_path="pwsh").run(
+                command="Get-Location",
+                cwd=temp_dir,
+                timeout_s=5,
+                approved=True,
+                declared_risk=RiskLevel.READ_ONLY,
+                computed_risk=RiskLevel.READ_ONLY,
+                risk_reason="test",
+            )
+        argv = run_mock.call_args.args[0]
+        self.assertEqual(argv, ["pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "Get-Location"])
+
+    def test_cmd_argv(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch("shellpilot.shell_runner.subprocess.run") as run_mock:
+            run_mock.return_value.stdout = ""
+            run_mock.return_value.stderr = ""
+            run_mock.return_value.returncode = 0
+            ShellRunner(ShellKind.CMD, shell_path="cmd.exe").run(
+                command="dir",
+                cwd=temp_dir,
+                timeout_s=5,
+                approved=True,
+                declared_risk=RiskLevel.READ_ONLY,
+                computed_risk=RiskLevel.READ_ONLY,
+                risk_reason="test",
+            )
+        argv = run_mock.call_args.args[0]
+        self.assertEqual(argv, ["cmd.exe", "/d", "/s", "/c", "dir"])
 
 
 if __name__ == "__main__":

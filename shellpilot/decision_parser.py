@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from .models import CommandDecision, DecisionAction, RiskLevel
+from .models import CommandDecision, DecisionAction, RiskLevel, ShellKind
 
 
 class DecisionParseError(ValueError):
@@ -163,14 +163,20 @@ def decision_prompt(
     git_state: dict[str, Any],
     previous_result: dict[str, Any] | None,
     turn: int,
+    shell: ShellKind | str = ShellKind.BASH,
 ) -> str:
     previous_json = json.dumps(_compact_previous_result(previous_result), ensure_ascii=False, indent=2)
     git_json = json.dumps(_compact_git_state(git_state), ensure_ascii=False, indent=2)
+    shell_kind = ShellKind(shell)
+    shell_rules = _shell_rules(shell_kind)
     return f"""
 You are ShellPilot, a single-agent local command cockpit.
 
 You are working in this workspace:
 {workspace}
+
+Local command shell:
+{shell_rules["name"]}
 
 User task:
 {task}
@@ -183,28 +189,69 @@ Previous command result:
 
 Rules:
 - Return exactly one JSON object and nothing else.
-- Choose exactly one Bash command for the next turn, or return done.
+- Choose exactly one {shell_rules["name"]} command for the next turn, or return done.
 - Do not return a plan, markdown, code fences, commentary, or multiple commands.
 - Escape every double quote inside the JSON command string.
 - Prefer simple commands that avoid nested double quotes.
-- For CSV transformations, prefer one `python3 -c '...'` command with the whole Python program inside one single-quoted shell argument.
-- In `python3 -c '...'`, use semicolons inside that quoted Python argument. Do not use `exec("...")`, literal `\n` escapes, or multiline Python.
+{shell_rules["guidance"]}
 - Inspect before edit. Prefer read-only commands until you know the repo shape.
 - Do not assume repo structure.
 - Use Git as the source of truth for status, diffs, and audit trail.
 - The local app will risk-check and approval-gate all non-read-only commands.
 - Avoid destructive, network, package install, process killing, and system-level commands.
-- One shell command only. No unquoted newlines, unquoted semicolons, &&, or ||. Pipelines with | are allowed.
+- One shell command only. No unquoted newlines, unquoted semicolons, &, &&, or ||. Pipelines with | are allowed.
 - Semicolons inside a quoted `python3 -c '...'` program are allowed.
 
 Valid command JSON:
-{{"action":"command","command":"pwd","risk":"read_only","reason":"Check the current directory first."}}
+{shell_rules["example"]}
 
 Valid done JSON:
 {{"action":"done","reason":"Task complete."}}
 
 Turn: {turn}
 """.strip()
+
+
+def _shell_rules(shell: ShellKind) -> dict[str, str]:
+    if shell == ShellKind.POWERSHELL:
+        return {
+            "name": "PowerShell",
+            "guidance": (
+                "- Prefer PowerShell inspection commands such as `Get-Location`, `Get-ChildItem`, "
+                "`Get-Content`, `Select-String`, and `git status --short`.\n"
+                "- For CSV transformations, prefer PowerShell cmdlets when simple. If Python is needed, "
+                "use `python -c \"...\"` and keep it one line."
+            ),
+            "example": (
+                '{"action":"command","command":"Get-Location","risk":"read_only",'
+                '"reason":"Check the current directory first."}'
+            ),
+        }
+    if shell == ShellKind.CMD:
+        return {
+            "name": "Windows cmd.exe",
+            "guidance": (
+                "- Prefer cmd inspection commands such as `cd`, `dir`, `type`, `findstr`, and `git status --short`.\n"
+                "- For CSV transformations, prefer `python -c \"...\"` and keep it one line."
+            ),
+            "example": (
+                '{"action":"command","command":"cd","risk":"read_only",'
+                '"reason":"Check the current directory first."}'
+            ),
+        }
+    return {
+        "name": "Bash",
+        "guidance": (
+            "- For CSV transformations, prefer one `python3 -c '...'` command with the whole Python program "
+            "inside one single-quoted shell argument.\n"
+            "- In `python3 -c '...'`, use semicolons inside that quoted Python argument. Do not use "
+            '`exec("...")`, literal `\\n` escapes, or multiline Python.'
+        ),
+        "example": (
+            '{"action":"command","command":"pwd","risk":"read_only",'
+            '"reason":"Check the current directory first."}'
+        ),
+    }
 
 
 def _compact_git_state(git_state: dict[str, Any]) -> dict[str, Any]:

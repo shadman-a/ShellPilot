@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import queue
+import string
 import threading
 import webbrowser
 from http import HTTPStatus
@@ -14,7 +16,8 @@ from urllib.parse import parse_qs, urlparse
 
 from .agent_loop import ShellPilotLoop
 from .copilot_connector import CopilotWorker
-from .models import DEFAULT_COPILOT_URL, DEFAULT_PROFILE_DIR, ApprovalMode, CommandDecision, RunConfig
+from .models import DEFAULT_COPILOT_URL, DEFAULT_PROFILE_DIR, ApprovalMode, CommandDecision, RunConfig, ShellKind
+from .shell_runner import default_shell_kind
 from .storage import create_run_paths
 from .utils import now_iso
 
@@ -31,6 +34,21 @@ def _parse_approval_mode(value: Any) -> ApprovalMode:
         raise ValueError(f"Invalid approval mode. Use one of: {valid}") from exc
 
 
+def _parse_shell_kind(value: Any) -> ShellKind:
+    try:
+        return ShellKind(str(value or "").strip())
+    except ValueError as exc:
+        valid = ", ".join(shell.value for shell in ShellKind)
+        raise ValueError(f"Invalid command shell. Use one of: {valid}") from exc
+
+
+def _filesystem_roots() -> list[str]:
+    if os.name == "nt":
+        roots = [f"{letter}:\\" for letter in string.ascii_uppercase if Path(f"{letter}:\\").exists()]
+        return roots or [str(Path.cwd().anchor or "C:\\")]
+    return ["/"]
+
+
 class AppState:
     def __init__(self, *, default_workspace: Path) -> None:
         self.lock = threading.RLock()
@@ -40,6 +58,7 @@ class AppState:
         self.profile_dir = DEFAULT_PROFILE_DIR
         self.workspace_dir = str(default_workspace.expanduser().resolve())
         self.approval_mode = ApprovalMode.ASK
+        self.shell_kind = default_shell_kind()
         self.session_status = "not_opened"
         self.selector_report: dict[str, Any] | None = None
         self.running = False
@@ -62,6 +81,8 @@ class AppState:
                 "profile_dir": self.profile_dir,
                 "workspace_dir": self.workspace_dir,
                 "approval_mode": self.approval_mode.value,
+                "shell_kind": self.shell_kind.value,
+                "available_shells": [shell.value for shell in ShellKind],
                 "session_status": self.session_status,
                 "selector_report": self.selector_report,
                 "running": self.running,
@@ -142,6 +163,7 @@ class AppState:
             self.copilot_url = str(payload.get("url") or self.copilot_url).strip() or DEFAULT_COPILOT_URL
             self.profile_dir = str(payload.get("profile_dir") or self.profile_dir).strip() or DEFAULT_PROFILE_DIR
             self.approval_mode = _parse_approval_mode(payload.get("approval_mode") or self.approval_mode.value)
+            self.shell_kind = _parse_shell_kind(payload.get("shell_kind") or self.shell_kind.value)
             self.stop_event = threading.Event()
             self.running = True
             self.current_turn = 0
@@ -160,6 +182,7 @@ class AppState:
                 "workspace_dir": str(workspace),
                 "run_folder": str(output_paths.run_folder),
                 "approval_mode": self.approval_mode.value,
+                "shell_kind": self.shell_kind.value,
             },
         )
 
@@ -181,6 +204,7 @@ class AppState:
                     event_callback=self.emit,
                     approval_callback=self.request_approval,
                     approval_mode=self.approval_mode,
+                    shell_kind=self.shell_kind,
                     command_timeout_s=command_timeout_s,
                     max_turns=max_turns,
                 )
@@ -229,9 +253,44 @@ class AppState:
             {
                 "workspace_dir": self.workspace_dir,
                 "approval_mode": self.approval_mode.value,
+                "shell_kind": self.shell_kind.value,
             },
         )
         return {"ok": True}
+
+    def browse_workspace(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_path = str(payload.get("path") or self.workspace_dir or Path.home()).strip()
+        candidate = Path(raw_path).expanduser()
+        if not candidate.exists():
+            raise ValueError(f"Path does not exist: {candidate}")
+        if not candidate.is_dir():
+            candidate = candidate.parent
+        current = candidate.resolve()
+
+        entries: list[dict[str, Any]] = []
+        try:
+            children = [path for path in current.iterdir() if path.is_dir()]
+        except PermissionError:
+            children = []
+        for child in sorted(children, key=lambda item: (item.name.startswith("."), item.name.lower()))[:500]:
+            entries.append(
+                {
+                    "name": child.name,
+                    "path": str(child.resolve()),
+                    "hidden": child.name.startswith("."),
+                }
+            )
+
+        parent = current.parent if current.parent != current else None
+        return {
+            "ok": True,
+            "path": str(current),
+            "parent": str(parent) if parent else "",
+            "home": str(Path.home()),
+            "roots": _filesystem_roots(),
+            "entries": entries,
+            "truncated": len(children) > len(entries),
+        }
 
     def set_approval_mode(self, payload: dict[str, Any]) -> dict[str, Any]:
         mode = _parse_approval_mode(payload.get("approval_mode"))
@@ -335,6 +394,8 @@ class ShellPilotHandler(BaseHTTPRequestHandler):
                 result = self.state.set_approval_mode(payload)
             elif self.path == "/api/approval":
                 result = self.state.submit_approval(payload)
+            elif self.path == "/api/browse_workspace":
+                result = self.state.browse_workspace(payload)
             else:
                 self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
                 return

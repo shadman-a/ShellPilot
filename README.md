@@ -7,7 +7,7 @@ It is based on the working SuperPilot proof of concept, but narrowed down:
 - Same real Copilot browser automation backend with Playwright.
 - Same persistent browser profile idea, so Microsoft login, SSO, and MFA happen manually in the browser and are reused.
 - No multi-agent planning, fake IDE, vector database, file-generation workflow, or broad tool protocol.
-- One Copilot turn proposes exactly one Bash command.
+- One Copilot turn proposes exactly one command for the selected local shell.
 - ShellPilot risk-checks the command, applies the selected approval mode, captures the result, records Git state, and sends the result back to Copilot.
 
 ## Install
@@ -32,6 +32,7 @@ http://127.0.0.1:8765/
 ## First Use
 
 1. Set the workspace path.
+   - Use **Browse** next to the workspace field to pick a local folder from ShellPilot's built-in directory browser.
 2. Click **Open Copilot / Login**.
 3. Complete Microsoft sign-in manually in the Playwright browser window.
 4. Click **Check Session**.
@@ -44,7 +45,11 @@ Use **Approval mode** beside the task prompt to choose how much ShellPilot asks 
 - ShellPilot uses browser UI automation only. It does not use Microsoft APIs.
 - It does not bypass authentication, MFA, CAPTCHAs, or enterprise controls.
 - Do not use it if your organization disallows browser automation.
-- The MVP runs Bash for local testing on macOS. It uses a non-login shell so commands inherit the app process `PATH`.
+- The command shell is selectable in **Session settings**: Bash, PowerShell, or Windows cmd.
+- On Windows, the default shell is PowerShell. On macOS/Linux, the default shell is Bash.
+- Bash uses a non-login shell so commands inherit the app process `PATH`.
+- PowerShell runs with `-NoProfile -ExecutionPolicy Bypass -Command`.
+- Windows cmd runs with `/d /s /c`.
 - Default mode is **Ask for approval**: only locally classified `read_only` commands run automatically.
 - **Approve for me** auto-runs `read_only`, `write_file`, and `network`; it still asks for `dangerous`.
 - **Full access** auto-runs every locally classified risk level, including `dangerous`.

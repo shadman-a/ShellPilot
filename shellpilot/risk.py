@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import shlex
 
-from .models import RiskAssessment, RiskLevel
+from .models import RiskAssessment, RiskLevel, ShellKind
 
 
 READ_ONLY_COMMANDS = {
     "pwd",
     "ls",
+    "dir",
     "find",
     "cat",
+    "type",
+    "cd",
+    "echo",
     "grep",
     "rg",
     "wc",
@@ -22,6 +26,18 @@ READ_ONLY_COMMANDS = {
     "file",
     "stat",
     "du",
+    "get-location",
+    "gl",
+    "get-childitem",
+    "get-child-item",
+    "gci",
+    "get-content",
+    "gc",
+    "select-string",
+    "sls",
+    "where-object",
+    "measure-object",
+    "findstr",
 }
 
 READ_ONLY_GIT_SUBCOMMANDS = {
@@ -58,8 +74,9 @@ DANGEROUS_GIT_PATTERNS = (
 )
 
 
-def classify_command(command: str) -> RiskAssessment:
+def classify_command(command: str, shell: ShellKind | str = ShellKind.BASH) -> RiskAssessment:
     command = (command or "").strip()
+    shell_kind = ShellKind(shell)
     if not command:
         return RiskAssessment(RiskLevel.DANGEROUS, False, "Empty command.")
     if _has_blocked_command_separator(command):
@@ -78,7 +95,7 @@ def classify_command(command: str) -> RiskAssessment:
     highest = RiskLevel.READ_ONLY
     reasons: list[str] = []
     for part in pipeline_parts:
-        risk, reason = _classify_single(part)
+        risk, reason = _classify_single(part, shell_kind)
         reasons.append(reason)
         highest = _max_risk(highest, risk)
     return RiskAssessment(highest, True, "; ".join(reasons))
@@ -113,9 +130,9 @@ def _has_blocked_command_separator(command: str) -> bool:
             idx += 1
             continue
         if not in_single and not in_double:
-            if char in {";", "\n", "\r"}:
+            if char in {";", "\n", "\r", "&"}:
                 return True
-            if command.startswith("&&", idx) or command.startswith("||", idx):
+            if command.startswith("||", idx):
                 return True
         idx += 1
     return False
@@ -178,9 +195,9 @@ def _split_unquoted_pipes(command: str) -> list[str]:
     return parts
 
 
-def _classify_single(command: str) -> tuple[RiskLevel, str]:
+def _classify_single(command: str, shell: ShellKind) -> tuple[RiskLevel, str]:
     try:
-        tokens = shlex.split(command, posix=True)
+        tokens = shlex.split(command, posix=shell == ShellKind.BASH)
     except ValueError:
         return RiskLevel.DANGEROUS, "Could not parse command safely."
     if not tokens:
@@ -205,6 +222,24 @@ def _classify_single(command: str) -> tuple[RiskLevel, str]:
         "chown",
         "diskutil",
         "launchctl",
+        "del",
+        "erase",
+        "rd",
+        "reg",
+        "regedit",
+        "taskkill",
+        "sc",
+        "net",
+        "stop-process",
+        "remove-item",
+        "ri",
+        "set-executionpolicy",
+        "start-process",
+        "powershell",
+        "powershell.exe",
+        "pwsh",
+        "cmd",
+        "cmd.exe",
     }
     if executable in dangerous_executables:
         return RiskLevel.DANGEROUS, f"{tokens[0]} is dangerous or system-level."
@@ -220,6 +255,10 @@ def _classify_single(command: str) -> tuple[RiskLevel, str]:
         "brew",
         "python",
         "python3",
+        "invoke-webrequest",
+        "invoke-restmethod",
+        "iwr",
+        "irm",
     }
     if executable in network_executables:
         if executable in {"python", "python3"} and ("--version" in args_lower or "-v" in args_lower):
@@ -236,6 +275,20 @@ def _classify_single(command: str) -> tuple[RiskLevel, str]:
         "patch",
         "perl",
         "ruby",
+        "copy",
+        "xcopy",
+        "robocopy",
+        "ren",
+        "rename",
+        "md",
+        "new-item",
+        "ni",
+        "set-content",
+        "add-content",
+        "out-file",
+        "copy-item",
+        "move-item",
+        "rename-item",
     }
     if executable in write_executables:
         return RiskLevel.WRITE_FILE, f"{tokens[0]} can modify files."

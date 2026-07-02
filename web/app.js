@@ -5,6 +5,7 @@ const els = {
   profileInput: document.getElementById("profileInput"),
   approvalModeSelect: document.getElementById("approvalModeSelect"),
   approvalModeHelp: document.getElementById("approvalModeHelp"),
+  shellKindSelect: document.getElementById("shellKindSelect"),
   maxTurnsInput: document.getElementById("maxTurnsInput"),
   commandTimeoutInput: document.getElementById("commandTimeoutInput"),
   copilotTimeoutInput: document.getElementById("copilotTimeoutInput"),
@@ -13,6 +14,7 @@ const els = {
   checkBtn: document.getElementById("checkBtn"),
   runBtn: document.getElementById("runBtn"),
   stopBtn: document.getElementById("stopBtn"),
+  browseWorkspaceBtn: document.getElementById("browseWorkspaceBtn"),
   themeToggle: document.getElementById("themeToggle"),
   themeToggleIcon: document.getElementById("themeToggleIcon"),
   approveBtn: document.getElementById("approveBtn"),
@@ -37,6 +39,7 @@ const els = {
   duration: document.getElementById("duration"),
   timedOut: document.getElementById("timedOut"),
   approved: document.getElementById("approved"),
+  shellValue: document.getElementById("shellValue"),
   cwdValue: document.getElementById("cwdValue"),
   stdoutBox: document.getElementById("stdoutBox"),
   stderrBox: document.getElementById("stderrBox"),
@@ -45,10 +48,21 @@ const els = {
   gitAfter: document.getElementById("gitAfter"),
   recentCommands: document.getElementById("recentCommands"),
   eventLog: document.getElementById("eventLog"),
+  workspaceBrowser: document.getElementById("workspaceBrowser"),
+  workspaceBrowserPath: document.getElementById("workspaceBrowserPath"),
+  workspaceBrowserRoots: document.getElementById("workspaceBrowserRoots"),
+  workspaceBrowserList: document.getElementById("workspaceBrowserList"),
+  browseCloseBtn: document.getElementById("browseCloseBtn"),
+  browseHomeBtn: document.getElementById("browseHomeBtn"),
+  browseParentBtn: document.getElementById("browseParentBtn"),
+  browseUseBtn: document.getElementById("browseUseBtn"),
 };
 
 let latestState = null;
 let initialized = false;
+let browserPath = "";
+let browserHome = "";
+let browserParent = "";
 const THEME_STORAGE_KEY = "shellpilot.theme";
 
 function getSystemTheme() {
@@ -128,6 +142,7 @@ function formPayload() {
     copilot_timeout_s: Number(els.copilotTimeoutInput.value || 180),
     capture_timeout_s: Number(els.captureTimeoutInput.value || 15),
     approval_mode: selectedApprovalMode(),
+    shell_kind: els.shellKindSelect.value || "bash",
   };
 }
 
@@ -136,6 +151,7 @@ function renderState(state) {
     els.workspaceInput.value = state.workspace_dir || "";
     els.urlInput.value = state.copilot_url || "";
     els.profileInput.value = state.profile_dir || "";
+    els.shellKindSelect.value = state.shell_kind || "bash";
     initialized = true;
   }
 
@@ -157,6 +173,7 @@ function renderState(state) {
   els.runBtn.disabled = state.running;
   els.stopBtn.disabled = !state.running;
   els.newSessionBtn.disabled = state.running;
+  els.shellKindSelect.disabled = state.running;
 
   renderApprovalMode(state.approval_mode || "ask", state.running);
   renderApproval(state.pending_approval);
@@ -235,6 +252,7 @@ function renderLatest(decision, result, latestTurn) {
   els.duration.textContent = commandResult.duration_s == null ? "-" : `${Number(commandResult.duration_s).toFixed(0)}ms`;
   els.timedOut.textContent = boolText(commandResult.timed_out);
   els.approved.textContent = boolText(commandResult.approved);
+  els.shellValue.textContent = commandResult.shell || "-";
   els.cwdValue.textContent = commandResult.cwd || "-";
   els.stdoutBox.textContent = renderTerminal(commandResult);
   els.stderrBox.textContent = commandResult.stderr || commandResult.skip_reason || "";
@@ -242,7 +260,8 @@ function renderLatest(decision, result, latestTurn) {
 
 function renderTerminal(result) {
   if (!result || !result.command) return "";
-  const prompt = `$ ${result.command}`;
+  const promptPrefix = result.shell === "cmd" ? ">" : result.shell === "powershell" ? "PS>" : "$";
+  const prompt = `${promptPrefix} ${result.command}`;
   const output = result.stdout || "";
   return `${prompt}${output ? "\n" + output : ""}`;
 }
@@ -367,6 +386,60 @@ function escapeHtml(value) {
   });
 }
 
+async function browseWorkspace(path) {
+  const data = await api("/api/browse_workspace", { path });
+  browserPath = data.path || "";
+  browserParent = data.parent || "";
+  browserHome = data.home || "";
+  renderWorkspaceBrowser(data);
+}
+
+function renderWorkspaceBrowser(data) {
+  els.workspaceBrowserPath.textContent = data.path || "";
+  els.browseParentBtn.disabled = !data.parent;
+  els.browseHomeBtn.disabled = !data.home || data.home === data.path;
+  els.workspaceBrowserRoots.innerHTML = "";
+  els.workspaceBrowserList.innerHTML = "";
+
+  for (const root of data.roots || []) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "browser-root";
+    button.textContent = root;
+    button.addEventListener("click", () => browseWorkspace(root).catch((error) => addLocalEvent("error", error.message)));
+    els.workspaceBrowserRoots.appendChild(button);
+  }
+
+  const entries = data.entries || [];
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "event-body";
+    empty.textContent = data.truncated ? "No readable folders in first results." : "No subfolders.";
+    els.workspaceBrowserList.appendChild(empty);
+    return;
+  }
+
+  for (const entry of entries) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "browser-entry";
+    button.innerHTML = `<span>□</span><span></span>`;
+    button.querySelector("span:last-child").textContent = entry.name || entry.path;
+    button.title = entry.path;
+    button.addEventListener("click", () => browseWorkspace(entry.path).catch((error) => addLocalEvent("error", error.message)));
+    els.workspaceBrowserList.appendChild(button);
+  }
+}
+
+function openWorkspaceBrowser() {
+  els.workspaceBrowser.classList.remove("hidden");
+  browseWorkspace(els.workspaceInput.value || ".").catch((error) => addLocalEvent("error", error.message));
+}
+
+function closeWorkspaceBrowser() {
+  els.workspaceBrowser.classList.add("hidden");
+}
+
 function wireEvents() {
   const source = new EventSource("/events");
   source.addEventListener("message", () => {
@@ -417,6 +490,31 @@ els.stopBtn.addEventListener("click", async () => {
     await fetchState();
   } catch (error) {
     addLocalEvent("error", error.message);
+  }
+});
+
+els.browseWorkspaceBtn.addEventListener("click", openWorkspaceBrowser);
+els.browseCloseBtn.addEventListener("click", closeWorkspaceBrowser);
+els.browseHomeBtn.addEventListener("click", () => {
+  if (browserHome) browseWorkspace(browserHome).catch((error) => addLocalEvent("error", error.message));
+});
+els.browseParentBtn.addEventListener("click", () => {
+  if (browserParent) browseWorkspace(browserParent).catch((error) => addLocalEvent("error", error.message));
+});
+els.browseUseBtn.addEventListener("click", () => {
+  if (browserPath) {
+    els.workspaceInput.value = browserPath;
+  }
+  closeWorkspaceBrowser();
+});
+els.workspaceBrowser.addEventListener("click", (event) => {
+  if (event.target === els.workspaceBrowser) {
+    closeWorkspaceBrowser();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !els.workspaceBrowser.classList.contains("hidden")) {
+    closeWorkspaceBrowser();
   }
 });
 

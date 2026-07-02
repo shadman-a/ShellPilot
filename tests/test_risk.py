@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from shellpilot.models import RiskLevel
+from shellpilot.models import RiskLevel, ShellKind
 from shellpilot.risk import classify_command
 
 
@@ -44,6 +44,27 @@ class RiskTests(unittest.TestCase):
         assessment = classify_command("pwd && ls")
         self.assertEqual(assessment.risk, RiskLevel.DANGEROUS)
         self.assertFalse(assessment.allowed_shape)
+
+    def test_single_ampersand_rejected_for_windows_shells(self) -> None:
+        assessment = classify_command("dir & type README.md", shell=ShellKind.CMD)
+        self.assertEqual(assessment.risk, RiskLevel.DANGEROUS)
+        self.assertFalse(assessment.allowed_shape)
+
+    def test_powershell_read_only(self) -> None:
+        assessment = classify_command("Get-ChildItem -Force", shell=ShellKind.POWERSHELL)
+        self.assertEqual(assessment.risk, RiskLevel.READ_ONLY)
+
+    def test_powershell_write(self) -> None:
+        assessment = classify_command("Set-Content notes.txt hello", shell=ShellKind.POWERSHELL)
+        self.assertEqual(assessment.risk, RiskLevel.WRITE_FILE)
+
+    def test_cmd_read_only(self) -> None:
+        assessment = classify_command("dir", shell=ShellKind.CMD)
+        self.assertEqual(assessment.risk, RiskLevel.READ_ONLY)
+
+    def test_cmd_delete_dangerous(self) -> None:
+        assessment = classify_command("del notes.txt", shell=ShellKind.CMD)
+        self.assertEqual(assessment.risk, RiskLevel.DANGEROUS)
 
 
 if __name__ == "__main__":

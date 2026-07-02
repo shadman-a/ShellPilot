@@ -19,7 +19,7 @@
       })();
     </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="stylesheet" href="/styles.css?v=20260701-nosidebar1" />
+    <link rel="stylesheet" href="/styles.css?v=20260702-shells1" />
   </head>
   <body>
     <div class="shell">
@@ -29,12 +29,13 @@
             <div class="brand-mark">&gt;_</div>
             <div>
               <h1>ShellPilot</h1>
-              <p>Bash Agent</p>
+              <p>Command Agent</p>
             </div>
           </div>
           <div class="workspace-bar">
             <span class="workspace-icon">□</span>
             <input id="workspaceInput" type="text" spellcheck="false" aria-label="Workspace path" />
+            <button id="browseWorkspaceBtn" class="secondary compact-button" type="button">Browse</button>
           </div>
           <div class="top-actions">
             <span id="sessionStatus" class="sr-only">Not opened</span>
@@ -90,6 +91,14 @@
                     <input id="maxTurnsInput" type="number" min="1" max="40" value="12" />
                   </label>
                   <label>
+                    Command shell
+                    <select id="shellKindSelect" aria-label="Command shell">
+                      <option value="bash">Bash</option>
+                      <option value="powershell">PowerShell</option>
+                      <option value="cmd">Windows cmd</option>
+                    </select>
+                  </label>
+                  <label>
                     Command timeout
                     <input id="commandTimeoutInput" type="number" min="1" max="3600" value="120" />
                   </label>
@@ -132,7 +141,7 @@
                   <span class="spark">✦</span>
                   <div>
                     <h2>Agent Turn</h2>
-                    <p>Copilot proposes the next Bash command.</p>
+                    <p>Copilot proposes the next shell command.</p>
                   </div>
                 </div>
                 <span id="turnBadge" class="soft-badge">Turn #0</span>
@@ -178,6 +187,7 @@
                 <div><span>Exit Code</span><strong id="exitCode">-</strong></div>
                 <div><span>Timeout</span><strong id="timedOut">-</strong></div>
                 <div><span>Approved</span><strong id="approved">-</strong></div>
+                <div><span>Shell</span><strong id="shellValue">-</strong></div>
                 <div><span>CWD</span><strong id="cwdValue">-</strong></div>
               </div>
             </section>
@@ -223,8 +233,27 @@
           <code id="runFolder">(none)</code>
         </footer>
       </main>
+
+      <section id="workspaceBrowser" class="browser-overlay hidden" aria-label="Workspace folder browser">
+        <div class="browser-panel">
+          <div class="card-header compact">
+            <div>
+              <h2>Choose Workspace</h2>
+              <p id="workspaceBrowserPath"></p>
+            </div>
+            <button id="browseCloseBtn" class="icon-button" type="button" aria-label="Close folder browser">×</button>
+          </div>
+          <div id="workspaceBrowserRoots" class="browser-roots"></div>
+          <div id="workspaceBrowserList" class="browser-list"></div>
+          <div class="button-row right">
+            <button id="browseHomeBtn" class="secondary" type="button">Home</button>
+            <button id="browseParentBtn" class="secondary" type="button">Parent</button>
+            <button id="browseUseBtn" type="button">Use This Folder</button>
+          </div>
+        </div>
+      </section>
     </div>
 
-    <script src="/app.js?v=20260701-nosidebar1"></script>
+    <script src="/app.js?v=20260702-shells1"></script>
   </body>
 </html>

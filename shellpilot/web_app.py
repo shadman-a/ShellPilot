@@ -208,6 +208,31 @@ class AppState:
         self.emit("stop_requested", {})
         return {"ok": True}
 
+    def new_session(self) -> dict[str, Any]:
+        with self.lock:
+            if self.running:
+                raise ValueError("Stop the active run before starting a new session.")
+            self.stop_event = threading.Event()
+            self.run_thread = None
+            self.run_folder = ""
+            self.current_turn = 0
+            self.current_step = "Idle"
+            self.latest_command = None
+            self.latest_result = None
+            self.pending_approval = None
+            self.selector_report = None
+            self._approval_answers.clear()
+            self.events = []
+            self._approval_condition.notify_all()
+        self.emit(
+            "new_session",
+            {
+                "workspace_dir": self.workspace_dir,
+                "approval_mode": self.approval_mode.value,
+            },
+        )
+        return {"ok": True}
+
     def set_approval_mode(self, payload: dict[str, Any]) -> dict[str, Any]:
         mode = _parse_approval_mode(payload.get("approval_mode"))
         with self.lock:
@@ -304,6 +329,8 @@ class ShellPilotHandler(BaseHTTPRequestHandler):
                 result = self.state.start_run(payload)
             elif self.path == "/api/stop":
                 result = self.state.stop()
+            elif self.path == "/api/new_session":
+                result = self.state.new_session()
             elif self.path == "/api/approval_mode":
                 result = self.state.set_approval_mode(payload)
             elif self.path == "/api/approval":

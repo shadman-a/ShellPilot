@@ -37,6 +37,8 @@ http://127.0.0.1:8765/
 4. Click **Check Session**.
 5. Enter a task and click **Run**.
 
+Use **Approval mode** beside the task prompt to choose how much ShellPilot asks before running commands. **New Session** clears the current task, run folder, command result, approval prompt, and live event log while keeping the Copilot browser login/profile intact.
+
 ## Safety
 
 - ShellPilot uses browser UI automation only. It does not use Microsoft APIs.

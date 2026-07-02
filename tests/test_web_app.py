@@ -85,6 +85,51 @@ class WebAppStateTests(unittest.TestCase):
             finally:
                 state.copilot.close()
 
+    def test_new_session_clears_run_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = AppState(default_workspace=Path(temp_dir))
+            try:
+                with state.lock:
+                    state.session_status = "ready"
+                    state.selector_report = {"passed": True}
+                    state.run_folder = str(Path(temp_dir) / ".shellpilot" / "runs" / "run_test")
+                    state.current_turn = 4
+                    state.current_step = "Copying"
+                    state.latest_command = {"command": "git status"}
+                    state.latest_result = {"command": "git status", "ok": True}
+                    state.pending_approval = {"id": "a1"}
+                    state._approval_answers["a1"] = True
+                    state.events = [{"type": "old", "payload": {}}]
+
+                result = state.new_session()
+                payload = state.to_json()
+            finally:
+                state.copilot.close()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(payload["session_status"], "ready")
+        self.assertIsNone(payload["selector_report"])
+        self.assertFalse(payload["running"])
+        self.assertEqual(payload["run_folder"], "")
+        self.assertEqual(payload["current_turn"], 0)
+        self.assertEqual(payload["current_step"], "Idle")
+        self.assertIsNone(payload["latest_command"])
+        self.assertIsNone(payload["latest_result"])
+        self.assertIsNone(payload["pending_approval"])
+        self.assertEqual(len(payload["events"]), 1)
+        self.assertEqual(payload["events"][0]["type"], "new_session")
+
+    def test_new_session_rejected_while_running(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = AppState(default_workspace=Path(temp_dir))
+            try:
+                with state.lock:
+                    state.running = True
+                with self.assertRaises(ValueError):
+                    state.new_session()
+            finally:
+                state.copilot.close()
+
 
 if __name__ == "__main__":
     unittest.main()

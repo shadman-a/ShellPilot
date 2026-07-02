@@ -3,6 +3,8 @@ const els = {
   workspaceInput: document.getElementById("workspaceInput"),
   urlInput: document.getElementById("urlInput"),
   profileInput: document.getElementById("profileInput"),
+  approvalModeSelect: document.getElementById("approvalModeSelect"),
+  approvalModeHelp: document.getElementById("approvalModeHelp"),
   maxTurnsInput: document.getElementById("maxTurnsInput"),
   commandTimeoutInput: document.getElementById("commandTimeoutInput"),
   copilotTimeoutInput: document.getElementById("copilotTimeoutInput"),
@@ -41,7 +43,6 @@ const els = {
   gitAfter: document.getElementById("gitAfter"),
   recentCommands: document.getElementById("recentCommands"),
   eventLog: document.getElementById("eventLog"),
-  approvalModeButtons: document.querySelectorAll("[data-mode]"),
 };
 
 let latestState = null;
@@ -105,6 +106,7 @@ function renderState(state) {
   els.checkBtn.disabled = state.running;
   els.runBtn.disabled = state.running;
   els.stopBtn.disabled = !state.running;
+  els.newSessionBtn.disabled = state.running;
 
   renderApprovalMode(state.approval_mode || "ask", state.running);
   renderApproval(state.pending_approval);
@@ -115,17 +117,19 @@ function renderState(state) {
 }
 
 function selectedApprovalMode() {
-  const active = document.querySelector("[data-mode].active");
-  return active ? active.dataset.mode : "ask";
+  return els.approvalModeSelect.value || "ask";
 }
 
 function renderApprovalMode(mode, running) {
-  for (const button of els.approvalModeButtons) {
-    const selected = button.dataset.mode === mode;
-    button.classList.toggle("active", selected);
-    button.setAttribute("aria-pressed", selected ? "true" : "false");
-    button.disabled = Boolean(running);
-  }
+  els.approvalModeSelect.value = mode;
+  els.approvalModeSelect.disabled = Boolean(running);
+  const help = {
+    ask: "Ask before write, network, or dangerous commands.",
+    approve_for_me: "Auto-run write and network commands; ask for dangerous commands.",
+    full_access: "Auto-run every classified risk level, including dangerous commands.",
+  };
+  els.approvalModeHelp.textContent = help[mode] || help.ask;
+  els.approvalModeHelp.className = mode === "full_access" ? "mode-help warning" : "mode-help";
 }
 
 function sessionText(status) {
@@ -380,24 +384,29 @@ els.denyBtn.addEventListener("click", async () => {
   await fetchState();
 });
 
-els.newSessionBtn.addEventListener("click", () => {
-  els.taskInput.value = "";
-  els.taskInput.focus();
+els.newSessionBtn.addEventListener("click", async () => {
+  try {
+    await api("/api/new_session", {});
+    els.taskInput.value = "";
+    els.approvalPanel.classList.add("hidden");
+    els.taskInput.focus();
+    await fetchState();
+  } catch (error) {
+    addLocalEvent("error", error.message);
+  }
 });
 
-for (const button of els.approvalModeButtons) {
-  button.addEventListener("click", async () => {
-    const mode = button.dataset.mode || "ask";
-    renderApprovalMode(mode, latestState && latestState.running);
-    try {
-      await api("/api/approval_mode", { approval_mode: mode });
-      await fetchState();
-    } catch (error) {
-      addLocalEvent("error", error.message);
-      if (latestState) renderApprovalMode(latestState.approval_mode || "ask", latestState.running);
-    }
-  });
-}
+els.approvalModeSelect.addEventListener("change", async () => {
+  const mode = selectedApprovalMode();
+  renderApprovalMode(mode, latestState && latestState.running);
+  try {
+    await api("/api/approval_mode", { approval_mode: mode });
+    await fetchState();
+  } catch (error) {
+    addLocalEvent("error", error.message);
+    if (latestState) renderApprovalMode(latestState.approval_mode || "ask", latestState.running);
+  }
+});
 
 for (const button of document.querySelectorAll("[data-refresh]")) {
   button.addEventListener("click", () => fetchState().catch((error) => addLocalEvent("error", error.message)));

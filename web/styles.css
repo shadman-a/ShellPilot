@@ -35,6 +35,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
   letter-spacing: 0;
@@ -90,8 +91,7 @@ h1 {
 .brand p,
 .card-header p,
 .task-card > p,
-.approval-mode p,
-.next-card p {
+.prompt-options p {
   color: var(--muted);
 }
 
@@ -213,6 +213,7 @@ h2 {
 
 .workspace-bar input,
 .task-card input,
+.task-card select,
 .task-card textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -298,8 +299,6 @@ h2 {
 .agent-card,
 .output-card,
 .approval,
-.next-card,
-.approval-mode,
 .rail-card {
   padding: 20px;
 }
@@ -334,8 +333,7 @@ h2 {
   line-height: 1;
 }
 
-.terminal-icon,
-.next-icon {
+.terminal-icon {
   display: grid;
   place-items: center;
   width: 30px;
@@ -373,10 +371,48 @@ label {
   padding: 10px 11px;
 }
 
+.task-card select {
+  min-height: 42px;
+  margin-top: 7px;
+  padding: 0 36px 0 11px;
+  appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, #667085 50%) calc(100% - 18px) 18px / 6px 6px no-repeat,
+    linear-gradient(135deg, #667085 50%, transparent 50%) calc(100% - 13px) 18px / 6px 6px no-repeat,
+    var(--surface);
+  font-weight: 700;
+}
+
 input:focus,
+select:focus,
 textarea:focus {
   border-color: #9dd8bd;
   box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.12);
+}
+
+.prompt-options {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: end;
+  margin: 2px 0 12px;
+}
+
+.mode-help {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--surface-soft);
+  font-size: 12px;
+}
+
+.mode-help.warning {
+  border-color: #f4c18b;
+  background: #fff3e8;
+  color: #b45309;
 }
 
 .config-grid {
@@ -605,92 +641,6 @@ button.full {
   white-space: nowrap;
 }
 
-.next-card {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) auto;
-  gap: 16px;
-  align-items: center;
-}
-
-.next-icon {
-  width: 44px;
-  height: 44px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--purple-soft);
-  color: var(--purple);
-}
-
-.approval-mode {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(150px, 180px));
-  gap: 14px;
-  align-items: center;
-}
-
-.mode-pill {
-  display: block;
-  width: 100%;
-  min-height: 58px;
-  padding: 12px 16px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--text);
-  text-align: left;
-  box-shadow: none;
-}
-
-.mode-pill.active {
-  background: var(--green-soft);
-  border-color: #bfe7d3;
-}
-
-.mode-pill:hover:not(:disabled) {
-  background: #f8fbfa;
-  filter: none;
-}
-
-.mode-pill.active:hover:not(:disabled) {
-  background: var(--green-soft);
-}
-
-.mode-pill.full-access.active {
-  background: #fff3e8;
-  border-color: #f4c18b;
-}
-
-.mode-pill strong,
-.mode-pill span {
-  display: block;
-}
-
-.mode-pill strong {
-  color: var(--green-dark);
-  font-size: 14px;
-}
-
-.mode-pill.full-access strong {
-  color: #d96416;
-}
-
-.mode-pill span {
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.mode-pill:disabled {
-  background: #f5f7fa;
-  color: #98a2b3;
-  cursor: not-allowed;
-}
-
-.mode-pill:disabled strong,
-.mode-pill:disabled span {
-  color: #98a2b3;
-}
-
 .icon-button {
   min-height: 30px;
   width: 30px;
@@ -848,11 +798,10 @@ button.full {
   }
 
   .topbar,
+  .prompt-options,
   .config-grid,
   .decision-strip,
   .result-grid,
-  .next-card,
-  .approval-mode,
   .right-rail {
     grid-template-columns: 1fr;
   }

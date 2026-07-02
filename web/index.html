@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ShellPilot</title>
-    <link rel="stylesheet" href="/styles.css?v=20260701-modes" />
+    <link rel="stylesheet" href="/styles.css?v=20260701-qol1" />
   </head>
   <body>
     <div class="shell">
@@ -64,6 +64,18 @@
 
               <label for="taskInput">Task prompt</label>
               <textarea id="taskInput" rows="4" placeholder="Example: inspect this repo and tell me what command should run next"></textarea>
+
+              <div class="prompt-options">
+                <label for="approvalModeSelect">
+                  Approval mode
+                  <select id="approvalModeSelect" aria-label="Approval mode">
+                    <option value="ask">Ask for approval</option>
+                    <option value="approve_for_me">Approve for me</option>
+                    <option value="full_access">Full access</option>
+                  </select>
+                </label>
+                <p id="approvalModeHelp">Ask before write, network, or dangerous commands.</p>
+              </div>
 
               <details class="advanced-config">
                 <summary>Session settings</summary>
@@ -173,33 +185,6 @@
               </div>
             </section>
 
-            <section class="card next-card">
-              <div class="next-icon">➤</div>
-              <div>
-                <h2>Send result back to Copilot</h2>
-                <p>Every command result is automatically included in the next prompt.</p>
-              </div>
-              <button id="nextTurnBtn" type="button" class="secondary" disabled>Automatic</button>
-            </section>
-
-            <section class="approval-mode card">
-              <div>
-                <h2>Approval Mode</h2>
-                <p>Control which commands need approval</p>
-              </div>
-              <button class="mode-pill active" type="button" data-mode="ask">
-                <strong>Ask for approval</strong>
-                <span>Ask before write, network, dangerous</span>
-              </button>
-              <button class="mode-pill" type="button" data-mode="approve_for_me">
-                <strong>Approve for me</strong>
-                <span>Only ask for dangerous</span>
-              </button>
-              <button class="mode-pill full-access" type="button" data-mode="full_access">
-                <strong>Full access</strong>
-                <span>Run all classified risks</span>
-              </button>
-            </section>
           </section>
 
           <aside class="right-rail">
@@ -243,6 +228,6 @@
       </main>
     </div>
 
-    <script src="/app.js?v=20260701-modes"></script>
+    <script src="/app.js?v=20260701-qol1"></script>
   </body>
 </html>

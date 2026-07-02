@@ -4,7 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ShellPilot</title>
-    <link rel="stylesheet" href="/styles.css?v=20260701-qol1" />
+    <script>
+      (() => {
+        try {
+          const saved = localStorage.getItem("shellpilot.theme");
+          const savedIsValid = saved === "dark" || saved === "light";
+          const systemDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+          document.documentElement.dataset.theme = savedIsValid ? saved : systemDark ? "dark" : "light";
+          document.documentElement.dataset.themeSource = savedIsValid ? "user" : "system";
+        } catch {
+          document.documentElement.dataset.theme = "light";
+          document.documentElement.dataset.themeSource = "system";
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="/styles.css?v=20260701-theme1" />
   </head>
   <body>
     <div class="shell">
@@ -47,6 +61,9 @@
           <div class="top-actions">
             <span id="connectionPill" class="pill">Copilot not opened</span>
             <span id="runStatus" class="pill neutral">Idle</span>
+            <button id="themeToggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Switch theme">
+              <span id="themeToggleIcon" aria-hidden="true">☾</span>
+            </button>
             <span class="avatar">SP</span>
           </div>
         </header>
@@ -228,6 +245,6 @@
       </main>
     </div>
 
-    <script src="/app.js?v=20260701-qol1"></script>
+    <script src="/app.js?v=20260701-theme1"></script>
   </body>
 </html>

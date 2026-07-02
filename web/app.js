@@ -13,6 +13,8 @@ const els = {
   checkBtn: document.getElementById("checkBtn"),
   runBtn: document.getElementById("runBtn"),
   stopBtn: document.getElementById("stopBtn"),
+  themeToggle: document.getElementById("themeToggle"),
+  themeToggleIcon: document.getElementById("themeToggleIcon"),
   approveBtn: document.getElementById("approveBtn"),
   denyBtn: document.getElementById("denyBtn"),
   newSessionBtn: document.getElementById("newSessionBtn"),
@@ -47,6 +49,54 @@ const els = {
 
 let latestState = null;
 let initialized = false;
+const THEME_STORAGE_KEY = "shellpilot.theme";
+
+function getSystemTheme() {
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function getSavedTheme() {
+  try {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    return saved === "dark" || saved === "light" ? saved : null;
+  } catch {
+    return null;
+  }
+}
+
+function applyTheme(theme, source) {
+  const resolved = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.dataset.themeSource = source;
+  els.themeToggleIcon.textContent = resolved === "dark" ? "☀" : "☾";
+  els.themeToggle.setAttribute("aria-label", `Switch to ${resolved === "dark" ? "light" : "dark"} mode`);
+  els.themeToggle.title = source === "system" ? `Using system ${resolved} theme` : `Using ${resolved} theme`;
+}
+
+function initializeTheme() {
+  const saved = getSavedTheme();
+  applyTheme(saved || getSystemTheme(), saved ? "user" : "system");
+
+  if (window.matchMedia) {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    media.addEventListener("change", (event) => {
+      if (!getSavedTheme()) {
+        applyTheme(event.matches ? "dark" : "light", "system");
+      }
+    });
+  }
+}
+
+function toggleTheme() {
+  const current = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  const next = current === "dark" ? "light" : "dark";
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, next);
+  } catch {
+    // Theme persistence is optional; the visual toggle still works.
+  }
+  applyTheme(next, "user");
+}
 
 async function api(path, payload = {}) {
   const response = await fetch(path, {
@@ -370,6 +420,8 @@ els.stopBtn.addEventListener("click", async () => {
   }
 });
 
+els.themeToggle.addEventListener("click", toggleTheme);
+
 els.approveBtn.addEventListener("click", async () => {
   const id = els.approveBtn.dataset.id;
   if (!id) return;
@@ -412,4 +464,5 @@ for (const button of document.querySelectorAll("[data-refresh]")) {
   button.addEventListener("click", () => fetchState().catch((error) => addLocalEvent("error", error.message)));
 }
 
+initializeTheme();
 fetchState().then(wireEvents).catch((error) => addLocalEvent("error", error.message));

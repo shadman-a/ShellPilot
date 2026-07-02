@@ -75,6 +75,23 @@ COPY_BUTTON_SELECTORS: tuple[str, ...] = (
     "button[data-testid*='copy' i]",
 )
 
+NEW_CHAT_SELECTORS: tuple[str, ...] = (
+    "button[aria-label*='new chat' i]",
+    "a[aria-label*='new chat' i]",
+    "button[aria-label*='new conversation' i]",
+    "a[aria-label*='new conversation' i]",
+    "button[aria-label*='start new' i]",
+    "a[aria-label*='start new' i]",
+    "button[title*='new chat' i]",
+    "a[title*='new chat' i]",
+    "button[title*='new conversation' i]",
+    "a[title*='new conversation' i]",
+    "button[data-testid*='new-chat' i]",
+    "a[data-testid*='new-chat' i]",
+    "button[data-testid*='newChat' i]",
+    "a[data-testid*='newChat' i]",
+)
+
 Context = Page | Frame
 
 
@@ -226,6 +243,31 @@ def find_send_control(page: Page) -> tuple[Locator | None, str | None]:
     return None, None
 
 
+def find_new_chat_control(page: Page) -> tuple[Locator | None, str | None]:
+    for context in iter_contexts(page):
+        locator, selector = _first_match(context, NEW_CHAT_SELECTORS)
+        if locator:
+            return locator, selector
+
+    name_patterns = (
+        "new chat",
+        "new conversation",
+        "start new",
+        "new topic",
+    )
+    for context in iter_contexts(page):
+        for pattern in name_patterns:
+            for role in ("button", "link"):
+                try:
+                    candidate = context.get_by_role(role, name=re.compile(pattern, re.IGNORECASE)).first
+                except Error:
+                    continue
+                if _safe_count(candidate) and _is_visible(candidate):
+                    return candidate, f"role={role}[name*={pattern}]"
+
+    return None, None
+
+
 def has_stop_control_visible(page: Page) -> bool:
     for context in iter_contexts(page):
         locator, _ = _first_match(context, STOP_BUTTON_SELECTORS)
@@ -366,4 +408,3 @@ def test_selectors(page: Page) -> SelectorTestReport:
         report.details.append("Stop/Cancel control not detected in current DOM state.")
 
     return report
-

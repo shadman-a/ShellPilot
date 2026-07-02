@@ -9,6 +9,20 @@ from shellpilot.models import ApprovalMode, CommandDecision, DecisionAction, Ris
 from shellpilot.web_app import AppState
 
 
+class FakeCopilot:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def call(self, method: str, *args: object, **kwargs: object) -> object:
+        self.calls.append((method, args))
+        if method == "start_new_chat":
+            return {"ok": True, "method": "fake", "url": "https://m365.cloud.microsoft/chat"}
+        return None
+
+    def close(self) -> None:
+        return
+
+
 class WebAppStateTests(unittest.TestCase):
     def test_initial_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -89,6 +103,9 @@ class WebAppStateTests(unittest.TestCase):
     def test_new_session_clears_run_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = AppState(default_workspace=Path(temp_dir))
+            state.copilot.close()
+            fake_copilot = FakeCopilot()
+            state.copilot = fake_copilot
             try:
                 with state.lock:
                     state.session_status = "ready"
@@ -108,7 +125,7 @@ class WebAppStateTests(unittest.TestCase):
                 state.copilot.close()
 
         self.assertTrue(result["ok"])
-        self.assertEqual(payload["session_status"], "ready")
+        self.assertEqual(payload["session_status"], "opened")
         self.assertIsNone(payload["selector_report"])
         self.assertFalse(payload["running"])
         self.assertEqual(payload["run_folder"], "")
@@ -119,6 +136,23 @@ class WebAppStateTests(unittest.TestCase):
         self.assertIsNone(payload["pending_approval"])
         self.assertEqual(len(payload["events"]), 1)
         self.assertEqual(payload["events"][0]["type"], "new_session")
+        self.assertEqual(fake_copilot.calls[0][0], "start_new_chat")
+        self.assertTrue(payload["events"][0]["payload"]["copilot_new_chat"])
+
+    def test_new_session_skips_copilot_when_not_opened(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = AppState(default_workspace=Path(temp_dir))
+            state.copilot.close()
+            fake_copilot = FakeCopilot()
+            state.copilot = fake_copilot
+            try:
+                result = state.new_session()
+            finally:
+                state.copilot.close()
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["copilot_new_chat"])
+        self.assertEqual(fake_copilot.calls, [])
 
     def test_new_session_rejected_while_running(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

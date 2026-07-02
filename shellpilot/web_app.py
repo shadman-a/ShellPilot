@@ -236,6 +236,18 @@ class AppState:
         with self.lock:
             if self.running:
                 raise ValueError("Stop the active run before starting a new session.")
+            should_start_copilot_chat = self.session_status in {"opened", "ready", "needs_attention"}
+            copilot_url = self.copilot_url
+            profile_dir = self.profile_dir
+
+        copilot_chat: dict[str, Any] | None = None
+        if should_start_copilot_chat:
+            try:
+                copilot_chat = self.copilot.call("start_new_chat", copilot_url, profile_dir)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"Could not start a new Copilot chat thread: {exc}") from exc
+
+        with self.lock:
             self.stop_event = threading.Event()
             self.run_thread = None
             self.run_folder = ""
@@ -248,15 +260,19 @@ class AppState:
             self._approval_answers.clear()
             self.events = []
             self._approval_condition.notify_all()
+            if copilot_chat:
+                self.session_status = "opened"
         self.emit(
             "new_session",
             {
                 "workspace_dir": self.workspace_dir,
                 "approval_mode": self.approval_mode.value,
                 "shell_kind": self.shell_kind.value,
+                "copilot_new_chat": bool(copilot_chat),
+                "copilot_chat": copilot_chat or {},
             },
         )
-        return {"ok": True}
+        return {"ok": True, "copilot_new_chat": bool(copilot_chat), "copilot_chat": copilot_chat or {}}
 
     def browse_workspace(self, payload: dict[str, Any]) -> dict[str, Any]:
         raw_path = str(payload.get("path") or self.workspace_dir or Path.home()).strip()

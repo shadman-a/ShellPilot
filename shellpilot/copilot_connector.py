@@ -80,6 +80,38 @@ class CopilotConnector:
             self._log("WARNING", "selectors_test_failed", error=str(exc))
         return report
 
+    def start_new_chat(self, copilot_url: str, user_data_dir: str) -> dict[str, Any]:
+        config = RunConfig(copilot_url=copilot_url, user_data_dir=user_data_dir)
+        self._ensure_ready(config)
+        page = self._require_page()
+        before_url = page.url
+
+        method = "navigate"
+        selector = ""
+        new_chat_control, new_chat_selector = selectors.find_new_chat_control(page)
+        if new_chat_control is not None:
+            try:
+                new_chat_control.click(timeout=3000)
+                method = "new_chat_control"
+                selector = new_chat_selector or "unknown"
+                self._log("INFO", "new_chat_clicked", selector=selector)
+            except Error as exc:
+                self._log("WARNING", "new_chat_click_failed", selector=new_chat_selector or "unknown", error=str(exc))
+                page.goto(copilot_url, wait_until="domcontentloaded")
+        else:
+            page.goto(copilot_url, wait_until="domcontentloaded")
+
+        self._wait_for_new_chat_ready()
+        page.bring_to_front()
+        self._log("INFO", "new_chat_ready", method=method, from_url=before_url, to_url=page.url)
+        return {
+            "ok": True,
+            "method": method,
+            "selector": selector,
+            "from_url": before_url,
+            "url": page.url,
+        }
+
     def send_turn(
         self,
         *,
@@ -433,6 +465,26 @@ class CopilotConnector:
             time.sleep(interval_s)
 
         raise TimeoutError(f"Response did not finish before timeout ({config.max_timeout_s}s).")
+
+    def _wait_for_new_chat_ready(self, timeout_s: float = 8.0) -> None:
+        page = self._require_page()
+        deadline = time.monotonic() + timeout_s
+        last_error = ""
+        while time.monotonic() < deadline:
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=500)
+            except Exception:
+                pass
+            try:
+                composer, _ = selectors.find_composer(page)
+                if composer is not None:
+                    return
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+            time.sleep(0.25)
+        if last_error:
+            raise RuntimeError(f"New Copilot chat did not become ready: {last_error}")
+        raise RuntimeError("New Copilot chat did not become ready; composer was not detected.")
 
     def _capture_latest_response(self, config: RunConfig, *, previous_chat_text: str = "") -> tuple[str, bool]:
         page = self._require_page()

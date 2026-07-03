@@ -39,7 +39,7 @@ class ShellPilotLoop:
         approval_mode: ApprovalMode = ApprovalMode.ASK,
         shell_kind: ShellKind = ShellKind.BASH,
         command_timeout_s: int = 120,
-        max_turns: int = 12,
+        max_turns: int = 50,
     ) -> None:
         self.copilot = copilot
         self.output_paths = output_paths

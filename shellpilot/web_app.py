@@ -18,7 +18,20 @@ from .agent_loop import ShellPilotLoop
 from .copilot_connector import CopilotWorker
 from .models import DEFAULT_COPILOT_URL, DEFAULT_PROFILE_DIR, ApprovalMode, CommandDecision, RunConfig, ShellKind
 from .shell_runner import default_shell_kind
-from .storage import create_run_paths
+from .storage import (
+    create_session,
+    delete_project,
+    delete_session,
+    ensure_project,
+    find_session,
+    load_project,
+    list_projects,
+    list_sessions,
+    load_session,
+    OutputPaths,
+    output_paths_for_session,
+    update_session,
+)
 from .utils import now_iso
 
 
@@ -49,6 +62,44 @@ def _filesystem_roots() -> list[str]:
     return ["/"]
 
 
+def _task_title(task: str) -> str:
+    compact = " ".join(str(task or "").split())
+    return compact[:80] or "New chat"
+
+
+def _events_from_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    if not turns:
+        return events
+    first = turns[0]
+    events.append(
+        {
+            "ts": str(first.get("ts") or now_iso()),
+            "type": "run_started",
+            "payload": {
+                "task": first.get("task") or "",
+                "workspace_dir": (first.get("git_before") or {}).get("workspace") or "",
+                "approval_mode": first.get("approval_mode") or "",
+            },
+        }
+    )
+    for turn in turns:
+        event_type = "turn_result"
+        if turn.get("done"):
+            event_type = "done"
+        elif turn.get("error"):
+            event_type = "turn_error"
+        events.append({"ts": str(turn.get("ts") or now_iso()), "type": event_type, "payload": turn})
+    return events
+
+
+def _latest_turn_with_result(turns: list[dict[str, Any]]) -> dict[str, Any]:
+    for turn in reversed(turns):
+        if turn.get("command_result"):
+            return turn
+    return {}
+
+
 class AppState:
     def __init__(self, *, default_workspace: Path) -> None:
         self.lock = threading.RLock()
@@ -59,6 +110,9 @@ class AppState:
         self.workspace_dir = str(default_workspace.expanduser().resolve())
         self.approval_mode = ApprovalMode.ASK
         self.shell_kind = default_shell_kind()
+        project = ensure_project(self.workspace_dir)
+        self.active_project_id = str(project["project_id"])
+        self.active_session_id = ""
         self.session_status = "not_opened"
         self.selector_report: dict[str, Any] | None = None
         self.running = False
@@ -73,13 +127,32 @@ class AppState:
         self._approval_condition = threading.Condition(self.lock)
         self._approval_answers: dict[str, bool] = {}
         self.events: list[dict[str, Any]] = []
+        if project.get("last_session_id"):
+            self._load_session_locked(self.active_project_id, str(project["last_session_id"]))
 
     def to_json(self) -> dict[str, Any]:
         with self.lock:
+            projects = list_projects()
+            sessions = list_sessions(self.active_project_id) if self.active_project_id else []
+            project_sessions = {
+                str(project["project_id"]): list_sessions(str(project["project_id"]))[:8]
+                for project in projects
+                if project.get("project_id")
+            }
+            active_session = next(
+                (session for session in sessions if session.get("session_id") == self.active_session_id),
+                None,
+            )
             return {
                 "copilot_url": self.copilot_url,
                 "profile_dir": self.profile_dir,
                 "workspace_dir": self.workspace_dir,
+                "active_project_id": self.active_project_id,
+                "active_session_id": self.active_session_id,
+                "active_session": active_session,
+                "projects": projects,
+                "sessions": sessions,
+                "project_sessions": project_sessions,
                 "approval_mode": self.approval_mode.value,
                 "shell_kind": self.shell_kind.value,
                 "available_shells": [shell.value for shell in ShellKind],
@@ -155,6 +228,7 @@ class AppState:
         workspace = Path(str(payload.get("workspace_dir") or self.workspace_dir)).expanduser().resolve()
         if not workspace.exists() or not workspace.is_dir():
             raise ValueError(f"Workspace does not exist: {workspace}")
+        project = ensure_project(workspace)
 
         with self.lock:
             if self.running:
@@ -171,14 +245,20 @@ class AppState:
             self.latest_command = None
             self.latest_result = None
             self.pending_approval = None
+            self.active_project_id = str(project["project_id"])
 
-        output_paths = create_run_paths(workspace)
+        session, output_paths = self._prepare_session_for_run(project, workspace, task)
         with self.lock:
             self.run_folder = str(output_paths.run_folder)
+            self.active_session_id = str(session["session_id"])
+            self.events = []
         self.emit(
             "run_started",
             {
                 "task": task,
+                "project_id": self.active_project_id,
+                "session_id": self.active_session_id,
+                "session_title": session.get("title") or task,
                 "workspace_dir": str(workspace),
                 "run_folder": str(output_paths.run_folder),
                 "approval_mode": self.approval_mode.value,
@@ -193,7 +273,7 @@ class AppState:
             capture_timeout_s=int(payload.get("capture_timeout_s") or 15),
             retry_once=True,
         )
-        max_turns = int(payload.get("max_turns") or 12)
+        max_turns = int(payload.get("max_turns") or 50)
         command_timeout_s = int(payload.get("command_timeout_s") or 120)
 
         def target() -> None:
@@ -216,11 +296,17 @@ class AppState:
                     self.running = False
                     self.current_step = "Idle"
                     self.pending_approval = None
+                self._touch_active_session()
                 self.emit("run_finished", {"run_folder": str(output_paths.run_folder)})
 
         self.run_thread = threading.Thread(target=target, name="shellpilot-run", daemon=True)
         self.run_thread.start()
-        return {"ok": True, "run_folder": str(output_paths.run_folder)}
+        return {
+            "ok": True,
+            "project_id": self.active_project_id,
+            "session_id": self.active_session_id,
+            "run_folder": str(output_paths.run_folder),
+        }
 
     def stop(self) -> dict[str, Any]:
         with self.lock:
@@ -239,6 +325,9 @@ class AppState:
             should_start_copilot_chat = self.session_status in {"opened", "ready", "needs_attention"}
             copilot_url = self.copilot_url
             profile_dir = self.profile_dir
+            workspace = Path(self.workspace_dir).expanduser().resolve()
+            approval_mode = self.approval_mode.value
+            shell_kind = self.shell_kind.value
 
         copilot_chat: dict[str, Any] | None = None
         if should_start_copilot_chat:
@@ -246,11 +335,19 @@ class AppState:
                 copilot_chat = self.copilot.call("start_new_chat", copilot_url, profile_dir)
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"Could not start a new Copilot chat thread: {exc}") from exc
+        project, session, output_paths = create_session(
+            workspace,
+            title="New chat",
+            shell_kind=shell_kind,
+            approval_mode=approval_mode,
+        )
 
         with self.lock:
+            self.active_project_id = str(project["project_id"])
+            self.active_session_id = str(session["session_id"])
             self.stop_event = threading.Event()
             self.run_thread = None
-            self.run_folder = ""
+            self.run_folder = str(output_paths.run_folder)
             self.current_turn = 0
             self.current_step = "Idle"
             self.latest_command = None
@@ -265,14 +362,139 @@ class AppState:
         self.emit(
             "new_session",
             {
+                "project_id": self.active_project_id,
+                "session_id": self.active_session_id,
                 "workspace_dir": self.workspace_dir,
+                "run_folder": self.run_folder,
                 "approval_mode": self.approval_mode.value,
                 "shell_kind": self.shell_kind.value,
                 "copilot_new_chat": bool(copilot_chat),
                 "copilot_chat": copilot_chat or {},
             },
         )
-        return {"ok": True, "copilot_new_chat": bool(copilot_chat), "copilot_chat": copilot_chat or {}}
+        return {
+            "ok": True,
+            "project_id": self.active_project_id,
+            "session_id": self.active_session_id,
+            "run_folder": self.run_folder,
+            "copilot_new_chat": bool(copilot_chat),
+            "copilot_chat": copilot_chat or {},
+        }
+
+    def select_project(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            if self.running:
+                raise ValueError("Stop the active run before switching projects.")
+
+        project_id = str(payload.get("project_id") or "").strip()
+        workspace_value = str(payload.get("workspace_dir") or "").strip()
+        if project_id:
+            project = load_project(project_id)
+        elif workspace_value:
+            workspace = Path(workspace_value).expanduser().resolve()
+            if not workspace.exists() or not workspace.is_dir():
+                raise ValueError(f"Workspace does not exist: {workspace}")
+            project = ensure_project(workspace)
+        else:
+            raise ValueError("Project id or workspace path is required.")
+
+        loaded_session: dict[str, Any] | None = None
+        last_session_id = str(project.get("last_session_id") or "")
+        with self.lock:
+            self.workspace_dir = str(project["workspace_path"])
+            self.active_project_id = str(project["project_id"])
+            self._clear_loaded_session_locked()
+            if last_session_id:
+                loaded_session = self._load_session_locked(self.active_project_id, last_session_id)
+        self.emit(
+            "project_selected",
+            {
+                "project_id": self.active_project_id,
+                "workspace_dir": self.workspace_dir,
+                "session_id": self.active_session_id,
+            },
+        )
+        return {"ok": True, "project": project, "session": loaded_session or {}}
+
+    def load_session_view(self, session_id: str) -> dict[str, Any]:
+        with self.lock:
+            if self.running:
+                raise ValueError("Stop the active run before loading another chat.")
+            active_project_id = self.active_project_id
+        project, session = find_session(session_id, active_project_id)
+        with self.lock:
+            self.workspace_dir = str(project["workspace_path"])
+            self.active_project_id = str(project["project_id"])
+            self._load_session_locked(self.active_project_id, session_id, session)
+        self.emit(
+            "session_loaded",
+            {
+                "project_id": self.active_project_id,
+                "session_id": self.active_session_id,
+                "workspace_dir": self.workspace_dir,
+            },
+        )
+        return {"ok": True, "project": project, "session": session}
+
+    def delete_session_view(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            if self.running:
+                raise ValueError("Stop the active run before deleting a chat.")
+            active_project_id = self.active_project_id
+            active_session_id = self.active_session_id
+
+        session_id = str(payload.get("session_id") or "").strip()
+        project_id = str(payload.get("project_id") or active_project_id).strip()
+        if not session_id:
+            raise ValueError("Session id is required.")
+        if not project_id:
+            raise ValueError("Project id is required.")
+
+        delete_session(project_id, session_id)
+        deleted_active = project_id == active_project_id and session_id == active_session_id
+        loaded_session: dict[str, Any] | None = None
+        with self.lock:
+            if deleted_active:
+                self._clear_loaded_session_locked()
+                remaining = list_sessions(project_id)
+                if remaining:
+                    loaded_session = self._load_session_locked(project_id, str(remaining[0]["session_id"]))
+        self.emit("session_deleted", {"project_id": project_id, "session_id": session_id})
+        return {"ok": True, "deleted_active": deleted_active, "session": loaded_session or {}}
+
+    def delete_project_view(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            if self.running:
+                raise ValueError("Stop the active run before deleting a project.")
+            active_project_id = self.active_project_id
+
+        project_id = str(payload.get("project_id") or "").strip()
+        if not project_id:
+            raise ValueError("Project id is required.")
+
+        delete_project(project_id)
+        deleted_active = project_id == active_project_id
+        loaded_project: dict[str, Any] | None = None
+        loaded_session: dict[str, Any] | None = None
+        with self.lock:
+            if deleted_active:
+                self._clear_loaded_session_locked()
+                self.active_project_id = ""
+                projects = list_projects()
+                if projects:
+                    loaded_project = projects[0]
+                    self.workspace_dir = str(loaded_project["workspace_path"])
+                    self.active_project_id = str(loaded_project["project_id"])
+                    last_session_id = str(loaded_project.get("last_session_id") or "")
+                    if last_session_id:
+                        loaded_session = self._load_session_locked(self.active_project_id, last_session_id)
+        self.emit("project_deleted", {"project_id": project_id})
+        return {
+            "ok": True,
+            "deleted_active": deleted_active,
+            "project": loaded_project or {},
+            "session": loaded_session or {},
+        }
 
     def browse_workspace(self, payload: dict[str, Any]) -> dict[str, Any]:
         raw_path = str(payload.get("path") or self.workspace_dir or Path.home()).strip()
@@ -285,7 +507,7 @@ class AppState:
 
         entries: list[dict[str, Any]] = []
         try:
-            children = [path for path in current.iterdir() if path.is_dir()]
+            children = [path for path in current.iterdir() if path.is_dir() and not path.name.startswith(".")]
         except PermissionError:
             children = []
         for child in sorted(children, key=lambda item: (item.name.startswith("."), item.name.lower()))[:500]:
@@ -354,6 +576,93 @@ class AppState:
                 self.pending_approval = None
             return approved
 
+    def _prepare_session_for_run(
+        self,
+        project: dict[str, Any],
+        workspace: Path,
+        task: str,
+    ) -> tuple[dict[str, Any], OutputPaths]:
+        project_id = str(project["project_id"])
+        with self.lock:
+            active_session_id = self.active_session_id if self.active_project_id == project_id else ""
+            shell_kind = self.shell_kind.value
+            approval_mode = self.approval_mode.value
+
+        if active_session_id:
+            try:
+                active_session = load_session(project_id, active_session_id)
+                if not active_session.get("turns") and active_session.get("status") in {"new", "idle"}:
+                    session = update_session(
+                        project_id,
+                        active_session_id,
+                        title=_task_title(task),
+                        workspace_path=str(workspace),
+                        shell_kind=shell_kind,
+                        approval_mode=approval_mode,
+                        status="running",
+                        turn_count=0,
+                    )
+                    return session, output_paths_for_session(project_id, active_session_id)
+            except ValueError:
+                pass
+
+        _, session, paths = create_session(
+            workspace,
+            title=task,
+            shell_kind=shell_kind,
+            approval_mode=approval_mode,
+        )
+        session = update_session(project_id, str(session["session_id"]), status="running")
+        return session, paths
+
+    def _load_session_locked(
+        self,
+        project_id: str,
+        session_id: str,
+        session: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        try:
+            payload = session or load_session(project_id, session_id)
+        except ValueError:
+            self._clear_loaded_session_locked()
+            return None
+
+        self.active_project_id = project_id
+        self.active_session_id = session_id
+        self.run_folder = str(payload.get("run_folder") or output_paths_for_session(project_id, session_id).run_folder)
+        turns = list(payload.get("turns") or [])
+        self.events = _events_from_turns(turns)
+        self.current_turn = int(turns[-1].get("turn") or 0) if turns else 0
+        self.current_step = "Idle"
+        self.pending_approval = None
+        self._approval_answers.clear()
+        latest = _latest_turn_with_result(turns)
+        self.latest_command = latest.get("decision") if latest else None
+        self.latest_result = latest.get("command_result") if latest else None
+        return payload
+
+    def _clear_loaded_session_locked(self) -> None:
+        self.active_session_id = ""
+        self.run_folder = ""
+        self.current_turn = 0
+        self.current_step = "Idle"
+        self.latest_command = None
+        self.latest_result = None
+        self.pending_approval = None
+        self._approval_answers.clear()
+        self.events = []
+
+    def _touch_active_session(self, **fields: Any) -> None:
+        with self.lock:
+            project_id = self.active_project_id
+            session_id = self.active_session_id
+        if not project_id or not session_id:
+            return
+        try:
+            update_session(project_id, session_id, **fields)
+        except ValueError:
+            return
+
     def _apply_event(self, event_type: str, payload: dict[str, Any]) -> None:
         if event_type == "turn_started":
             self.current_turn = int(payload.get("turn") or self.current_turn)
@@ -362,10 +671,21 @@ class AppState:
         elif event_type == "turn_result":
             self.latest_command = payload.get("decision")
             self.latest_result = payload.get("command_result")
+            self._touch_active_session(status="running", turn_count=self.current_turn)
         elif event_type == "run_error":
             self.current_step = "Error"
+            self._touch_active_session(status="error", turn_count=self.current_turn)
         elif event_type == "done":
             self.current_step = "Done"
+            self._touch_active_session(status="done", turn_count=self.current_turn)
+        elif event_type == "turn_error":
+            self._touch_active_session(status="error", turn_count=self.current_turn)
+        elif event_type == "stopped":
+            self.current_step = "Stopped"
+            self._touch_active_session(status="stopped", turn_count=self.current_turn)
+        elif event_type == "max_turns":
+            self.current_step = "Max turns"
+            self._touch_active_session(status="max_turns", turn_count=self.current_turn)
 
 
 class ShellPilotHandler(BaseHTTPRequestHandler):
@@ -375,6 +695,18 @@ class ShellPilotHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/state":
             self._send_json(self.state.to_json())
+            return
+        if parsed.path == "/api/projects":
+            self._send_json({"projects": list_projects()})
+            return
+        if parsed.path.startswith("/api/projects/") and parsed.path.endswith("/sessions"):
+            parts = parsed.path.strip("/").split("/")
+            if len(parts) == 4:
+                self._send_json({"sessions": list_sessions(parts[2])})
+                return
+        if parsed.path.startswith("/api/session/"):
+            session_id = parsed.path.rsplit("/", 1)[-1]
+            self._send_json(self.state.load_session_view(session_id))
             return
         if parsed.path == "/events":
             self._serve_events()
@@ -395,22 +727,30 @@ class ShellPilotHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         try:
+            parsed = urlparse(self.path)
+            path = parsed.path
             payload = self._read_json()
-            if self.path == "/api/open_copilot":
+            if path == "/api/open_copilot":
                 result = self.state.open_copilot(payload)
-            elif self.path == "/api/check_session":
+            elif path == "/api/check_session":
                 result = self.state.check_session()
-            elif self.path == "/api/run":
+            elif path == "/api/run":
                 result = self.state.start_run(payload)
-            elif self.path == "/api/stop":
+            elif path == "/api/stop":
                 result = self.state.stop()
-            elif self.path == "/api/new_session":
+            elif path in {"/api/new_session", "/api/session/new"}:
                 result = self.state.new_session()
-            elif self.path == "/api/approval_mode":
+            elif path == "/api/projects/select":
+                result = self.state.select_project(payload)
+            elif path == "/api/projects/delete":
+                result = self.state.delete_project_view(payload)
+            elif path == "/api/session/delete":
+                result = self.state.delete_session_view(payload)
+            elif path == "/api/approval_mode":
                 result = self.state.set_approval_mode(payload)
-            elif self.path == "/api/approval":
+            elif path == "/api/approval":
                 result = self.state.submit_approval(payload)
-            elif self.path == "/api/browse_workspace":
+            elif path == "/api/browse_workspace":
                 result = self.state.browse_workspace(payload)
             else:
                 self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)

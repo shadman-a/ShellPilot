@@ -9,6 +9,7 @@ It is based on the working SuperPilot proof of concept, but narrowed down:
 - No multi-agent planning, fake IDE, vector database, file-generation workflow, or broad tool protocol.
 - One Copilot turn proposes exactly one command for the selected local shell.
 - ShellPilot risk-checks the command, applies the selected approval mode, captures the result, records Git state, and sends the result back to Copilot.
+- Each selected workspace path is treated as a project, and each run/new session is saved as a chat under that project.
 
 ## Install
 
@@ -32,13 +33,22 @@ http://127.0.0.1:8765/
 ## First Use
 
 1. Set the workspace path.
-   - Use **Browse** next to the workspace field to pick a local folder from ShellPilot's built-in directory browser.
+   - Use **New Project** in the sidebar to pick a local folder with ShellPilot's built-in folder browser.
+   - ShellPilot creates/selects a local project for that exact path.
 2. Click **Open Copilot / Login**.
 3. Complete Microsoft sign-in manually in the Playwright browser window.
 4. Click **Check Session**.
 5. Enter a task and click **Run**.
 
-Use **Approval mode** beside the task prompt to choose how much ShellPilot asks before running commands. **New Session** clears the current task, run folder, command result, approval prompt, and live event log. If Copilot is open, it also starts a fresh Copilot chat thread while keeping the browser login/profile intact.
+Use **Approval mode** beside the task prompt to choose how much ShellPilot asks before running commands. **New Chat** creates a new local chat under the current project, clears the active transcript, and starts a fresh Copilot chat thread if Copilot is open while keeping the browser login/profile intact.
+
+The left sidebar works like Codex:
+
+- **Projects** are selected workspace paths.
+- **Chats** are saved ShellPilot sessions for the active project.
+- Selecting an old chat reloads its saved turns, command results, Git summaries, and logs.
+- Deleting a chat or project removes only ShellPilot's local saved artifacts. It does not delete workspace files.
+- The composer shows the active project name. Project switching happens from the sidebar.
 
 ## Safety
 
@@ -59,14 +69,17 @@ Use **Approval mode** beside the task prompt to choose how much ShellPilot asks 
 
 ## Artifacts
 
-Each run writes under:
+ShellPilot keeps artifacts in its own app folder, not inside the workspace repo:
 
 ```text
-<workspace>/.shellpilot/runs/run_YYYYMMDD_HHMMSS/
+/Users/shadman/Documents/ShellPilot/.shellpilot/projects/<project_id>/sessions/<session_id>/
 ```
+
+No `.shellpilot` folder should be created inside the target workspace.
 
 Artifacts:
 
+- `session.json`
 - `turns.jsonl`
 - `logs/events.log`
 - `copilot_responses/`

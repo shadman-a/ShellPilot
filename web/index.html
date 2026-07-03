@@ -19,233 +19,152 @@
       })();
     </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="stylesheet" href="/styles.css?v=20260702-shells1" />
+    <link rel="stylesheet" href="/styles.css?v=20260703-project-label1" />
   </head>
   <body>
-    <div class="shell">
-      <main class="main">
-        <header class="topbar">
-          <div class="brand top-brand">
-            <div class="brand-mark">&gt;_</div>
-            <div>
-              <h1>ShellPilot</h1>
-              <p>Command Agent</p>
-            </div>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">&gt;_</div>
+          <div>
+            <h1>ShellPilot</h1>
+            <p>Command chats</p>
           </div>
-          <div class="workspace-bar">
-            <span class="workspace-icon">□</span>
-            <input id="workspaceInput" type="text" spellcheck="false" aria-label="Workspace path" />
-            <button id="browseWorkspaceBtn" class="secondary compact-button" type="button">Browse</button>
+        </div>
+
+        <div class="primary-actions">
+          <button id="newSessionBtn" class="new-chat" type="button">New Chat</button>
+          <button id="newProjectBtn" class="new-project" type="button">New Project</button>
+        </div>
+
+        <section class="sidebar-section">
+          <div class="section-title">
+            <span>Projects</span>
           </div>
-          <div class="top-actions">
-            <span id="sessionStatus" class="sr-only">Not opened</span>
-            <span id="connectionPill" class="pill">Copilot not opened</span>
-            <span id="runStatus" class="pill neutral">Idle</span>
-            <button class="secondary compact-button" id="newSessionBtn" type="button">New Session</button>
-            <button id="themeToggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Switch theme">
+          <div id="projectList" class="sidebar-list"></div>
+        </section>
+
+        <section class="sidebar-section log-section">
+          <div class="section-title">
+            <span>Logs</span>
+          </div>
+          <div id="eventLog" class="event-log"></div>
+        </section>
+
+        <div class="sidebar-footer">
+          <span id="sessionStatus" class="sr-only">Not opened</span>
+          <span id="connectionPill" class="status-pill">Copilot not opened</span>
+          <span id="runStatus" class="status-pill neutral">Idle</span>
+          <div class="footer-actions">
+            <button id="openBtn" class="secondary" type="button">Open Copilot</button>
+            <button id="checkBtn" class="secondary" type="button">Check</button>
+            <button id="themeToggle" class="icon-button" type="button" aria-label="Switch theme" title="Switch theme">
               <span id="themeToggleIcon" aria-hidden="true">☾</span>
             </button>
-            <span class="avatar">SP</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="chat-main">
+        <header class="chat-header">
+          <div class="chat-heading">
+            <h2 id="activeProjectTitle">ShellPilot</h2>
+            <p id="activeSessionTitle">Choose a project or start a new chat.</p>
+          </div>
+          <div class="header-meta">
+            <span id="turnStatus" class="chip">Turn 0</span>
+            <span id="runFolder" class="chip muted" title="Run artifacts">(none)</span>
           </div>
         </header>
 
-        <section class="cockpit-grid">
-          <section class="main-column">
-            <section class="card task-card">
-              <div class="card-header">
-                <div>
-                  <h2>Mission</h2>
-                  <p>Prompt ShellPilot, then approve anything that writes, downloads, or looks risky.</p>
-                </div>
-                <span id="turnStatus" class="soft-badge">Turn 0</span>
-              </div>
+        <section id="chatTranscript" class="chat-transcript" aria-live="polite"></section>
 
-              <label for="taskInput">Task prompt</label>
-              <textarea id="taskInput" rows="4" placeholder="Example: inspect this repo and tell me what command should run next"></textarea>
-
-              <div class="prompt-options">
-                <label for="approvalModeSelect">
-                  Approval mode
-                  <select id="approvalModeSelect" aria-label="Approval mode">
-                    <option value="ask">Ask for approval</option>
-                    <option value="approve_for_me">Approve for me</option>
-                    <option value="full_access">Full access</option>
-                  </select>
-                </label>
-                <p id="approvalModeHelp">Ask before write, network, or dangerous commands.</p>
-              </div>
-
-              <details class="advanced-config">
-                <summary>Session settings</summary>
-                <div class="config-grid">
-                  <label>
-                    Copilot URL
-                    <input id="urlInput" type="text" spellcheck="false" />
-                  </label>
-                  <label>
-                    Browser profile
-                    <input id="profileInput" type="text" spellcheck="false" />
-                  </label>
-                  <label>
-                    Max turns
-                    <input id="maxTurnsInput" type="number" min="1" max="40" value="12" />
-                  </label>
-                  <label>
-                    Command shell
-                    <select id="shellKindSelect" aria-label="Command shell">
-                      <option value="bash">Bash</option>
-                      <option value="powershell">PowerShell</option>
-                      <option value="cmd">Windows cmd</option>
-                    </select>
-                  </label>
-                  <label>
-                    Command timeout
-                    <input id="commandTimeoutInput" type="number" min="1" max="3600" value="120" />
-                  </label>
-                  <label>
-                    Copilot timeout
-                    <input id="copilotTimeoutInput" type="number" min="10" max="900" value="180" />
-                  </label>
-                  <label>
-                    Capture timeout
-                    <input id="captureTimeoutInput" type="number" min="4" max="120" value="15" />
-                  </label>
-                </div>
-              </details>
-
-              <div class="button-row">
-                <button id="openBtn" type="button" class="secondary">Open Copilot / Login</button>
-                <button id="checkBtn" type="button" class="secondary">Check Session</button>
-                <button id="runBtn" type="button">Run</button>
-                <button id="stopBtn" type="button" class="danger" disabled>Stop</button>
-              </div>
-            </section>
-
-            <section id="approvalPanel" class="card approval hidden">
-              <div class="card-header">
-                <div>
-                  <h2>Approval Required</h2>
-                  <p id="approvalReason"></p>
-                </div>
-              </div>
-              <pre id="approvalCommand" class="command-line"></pre>
-              <div class="button-row right">
-                <button id="denyBtn" type="button" class="danger">Deny</button>
-                <button id="approveBtn" type="button">Approve</button>
-              </div>
-            </section>
-
-            <section class="card agent-card">
-              <div class="card-header">
-                <div class="title-with-icon">
-                  <span class="spark">✦</span>
-                  <div>
-                    <h2>Agent Turn</h2>
-                    <p>Copilot proposes the next shell command.</p>
-                  </div>
-                </div>
-                <span id="turnBadge" class="soft-badge">Turn #0</span>
-              </div>
-
-              <pre id="commandText" class="code-block">(no command yet)</pre>
-
-              <div class="decision-strip">
-                <div>
-                  <span>Risk</span>
-                  <strong id="computedRisk" class="risk">none</strong>
-                </div>
-                <div>
-                  <span>Declared</span>
-                  <strong id="declaredRisk">none</strong>
-                </div>
-                <div>
-                  <span>Reason</span>
-                  <strong id="commandReason">none</strong>
-                </div>
-              </div>
-            </section>
-
-            <section class="card output-card">
-              <div class="card-header">
-                <div class="title-with-icon">
-                  <span class="terminal-icon">&gt;</span>
-                  <div>
-                    <h2>Command Output</h2>
-                    <p id="outputSubtitle">Waiting for a command result.</p>
-                  </div>
-                </div>
-                <div class="result-status">
-                  <span id="outputState">Idle</span>
-                  <span id="duration">-</span>
-                </div>
-              </div>
-
-              <pre id="stdoutBox" class="terminal-box"></pre>
-              <pre id="stderrBox" class="terminal-box stderr"></pre>
-
-              <div class="result-grid">
-                <div><span>Exit Code</span><strong id="exitCode">-</strong></div>
-                <div><span>Timeout</span><strong id="timedOut">-</strong></div>
-                <div><span>Approved</span><strong id="approved">-</strong></div>
-                <div><span>Shell</span><strong id="shellValue">-</strong></div>
-                <div><span>CWD</span><strong id="cwdValue">-</strong></div>
-              </div>
-            </section>
-
-          </section>
-
-          <aside class="right-rail">
-            <section class="card rail-card">
-              <div class="card-header compact">
-                <h2>Git Status</h2>
-                <button class="icon-button" type="button" data-refresh>↻</button>
-              </div>
-              <div id="gitBranch" class="branch-line">Branch: -</div>
-              <pre id="gitBefore" class="rail-code">(none)</pre>
-            </section>
-
-            <section class="card rail-card">
-              <div class="card-header compact">
-                <h2>Git Diff (stat)</h2>
-                <button class="icon-button" type="button" data-refresh>↻</button>
-              </div>
-              <pre id="gitAfter" class="rail-code">(none)</pre>
-            </section>
-
-            <section class="card rail-card">
-              <div class="card-header compact">
-                <h2>Recent Commands</h2>
-              </div>
-              <div id="recentCommands" class="recent-list"></div>
-            </section>
-
-            <section class="card rail-card">
-              <div class="card-header compact">
-                <h2>Live Events</h2>
-              </div>
-              <div id="eventLog" class="event-log"></div>
-            </section>
-          </aside>
+        <section id="approvalPanel" class="approval-panel hidden">
+          <div>
+            <strong>Approval required</strong>
+            <p id="approvalReason"></p>
+            <pre id="approvalCommand"></pre>
+          </div>
+          <div class="approval-actions">
+            <button id="denyBtn" class="danger" type="button">Deny</button>
+            <button id="approveBtn" type="button">Approve</button>
+          </div>
         </section>
 
-        <footer class="run-folder-bar">
-          <span>Run folder</span>
-          <code id="runFolder">(none)</code>
+        <footer class="composer-wrap">
+          <div class="composer">
+            <textarea id="taskInput" rows="2" placeholder="Message ShellPilot with a task..."></textarea>
+            <div class="composer-controls">
+              <div id="composerProject" class="project-context" title="">
+                <span>Project</span>
+                <strong id="composerProjectName">ShellPilot</strong>
+              </div>
+              <label>
+                <span>Shell</span>
+                <select id="shellKindSelect" aria-label="Command shell">
+                  <option value="bash">Bash</option>
+                  <option value="powershell">PowerShell</option>
+                  <option value="cmd">Windows cmd</option>
+                </select>
+              </label>
+              <label>
+                <span>Approval</span>
+                <select id="approvalModeSelect" aria-label="Approval mode">
+                  <option value="ask">Ask</option>
+                  <option value="approve_for_me">Approve for me</option>
+                  <option value="full_access">Full access</option>
+                </select>
+              </label>
+              <button id="runBtn" type="button">Run</button>
+              <button id="stopBtn" type="button" class="danger" disabled>Stop</button>
+            </div>
+            <p id="approvalModeHelp" class="mode-help">Ask before write, network, or dangerous commands.</p>
+          </div>
+
+          <details class="advanced-config">
+            <summary>Session settings</summary>
+            <div class="config-grid">
+              <label>
+                <span>Copilot URL</span>
+                <input id="urlInput" type="text" spellcheck="false" />
+              </label>
+              <label>
+                <span>Browser profile</span>
+                <input id="profileInput" type="text" spellcheck="false" />
+              </label>
+              <label>
+                <span>Max turns</span>
+                <input id="maxTurnsInput" type="number" min="1" max="200" value="50" />
+              </label>
+              <label>
+                <span>Command timeout</span>
+                <input id="commandTimeoutInput" type="number" min="1" max="3600" value="120" />
+              </label>
+              <label>
+                <span>Copilot timeout</span>
+                <input id="copilotTimeoutInput" type="number" min="10" max="900" value="180" />
+              </label>
+              <label>
+                <span>Capture timeout</span>
+                <input id="captureTimeoutInput" type="number" min="4" max="120" value="15" />
+              </label>
+            </div>
+          </details>
         </footer>
       </main>
 
       <section id="workspaceBrowser" class="browser-overlay hidden" aria-label="Workspace folder browser">
         <div class="browser-panel">
-          <div class="card-header compact">
+          <div class="browser-header">
             <div>
-              <h2>Choose Workspace</h2>
+              <h2>Choose Project Folder</h2>
               <p id="workspaceBrowserPath"></p>
             </div>
-            <button id="browseCloseBtn" class="icon-button" type="button" aria-label="Close folder browser">×</button>
+            <button id="browseCloseBtn" class="icon-button" type="button" aria-label="Close folder browser">x</button>
           </div>
           <div id="workspaceBrowserRoots" class="browser-roots"></div>
           <div id="workspaceBrowserList" class="browser-list"></div>
-          <div class="button-row right">
+          <div class="browser-actions">
             <button id="browseHomeBtn" class="secondary" type="button">Home</button>
             <button id="browseParentBtn" class="secondary" type="button">Parent</button>
             <button id="browseUseBtn" type="button">Use This Folder</button>
@@ -254,6 +173,6 @@
       </section>
     </div>
 
-    <script src="/app.js?v=20260702-shells1"></script>
+    <script src="/app.js?v=20260703-project-label1"></script>
   </body>
 </html>

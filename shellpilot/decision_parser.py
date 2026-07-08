@@ -165,42 +165,45 @@ def decision_prompt(
     turn: int,
     shell: ShellKind | str = ShellKind.BASH,
 ) -> str:
-    previous_json = json.dumps(_compact_previous_result(previous_result), ensure_ascii=False, indent=2)
-    git_json = json.dumps(_compact_git_state(git_state), ensure_ascii=False, indent=2)
+    previous_json = json.dumps(_compact_previous_result(previous_result), ensure_ascii=False, separators=(",", ":"))
+    git_json = json.dumps(_compact_git_state(git_state), ensure_ascii=False, separators=(",", ":"))
     shell_kind = ShellKind(shell)
     shell_rules = _shell_rules(shell_kind)
     return f"""
-You are ShellPilot, a single-agent local command cockpit.
+You are ShellPilot. Return one local shell decision as strict JSON.
 
-You are working in this workspace:
+Workspace:
 {workspace}
 
-Local command shell:
+Shell:
 {shell_rules["name"]}
 
-User task:
+Task:
 {task}
 
-Current Git state:
+Git:
 {git_json}
 
-Previous command result:
+Previous result:
 {previous_json}
 
 Rules:
 - Return exactly one JSON object and nothing else.
 - Choose exactly one {shell_rules["name"]} command for the next turn, or return done.
-- Do not return a plan, markdown, code fences, commentary, or multiple commands.
-- Escape every double quote inside the JSON command string.
+- No markdown, code fences, commentary, plans, or multiple commands.
+- Escape double quotes inside the JSON command string.
 - Prefer simple commands that avoid nested double quotes.
 {shell_rules["guidance"]}
+- Treat every turn as self-contained. Use this prompt, Git state, and previous result.
+- If the previous command failed or was skipped, adapt from that result instead of repeating it unchanged.
 - Inspect before edit. Prefer read-only commands until you know the repo shape.
 - Do not assume repo structure.
 - Use Git as the source of truth for status, diffs, and audit trail.
 - The local app will risk-check and approval-gate all non-read-only commands.
-- Avoid destructive, network, package install, process killing, and system-level commands.
-- One shell command only. No unquoted newlines, unquoted semicolons, &, &&, or ||. Pipelines with | are allowed.
+- Avoid destructive, package install, process killing, and system-level commands.
+- One shell command only. No unquoted newlines, unquoted semicolons, &, &&, or ||. Pipes are allowed.
 - Semicolons inside a quoted `python3 -c '...'` program are allowed.
+- Return done when the task is complete or no safe single next command remains.
 
 Valid command JSON:
 {shell_rules["example"]}
@@ -267,14 +270,14 @@ def _compact_git_state(git_state: dict[str, Any]) -> dict[str, Any]:
         "branch": git_state.get("branch") or "",
         "dirty": bool(git_state.get("dirty")),
         "status_counts": _status_counts(status_lines),
-        "status_preview": _bounded_lines(status_lines, 20),
-        "status_omitted": max(0, len(status_lines) - 20),
-        "diff_stat_preview": _bounded_lines(diff_stat_lines, 10),
-        "diff_stat_omitted": max(0, len(diff_stat_lines) - 10),
-        "diff_name_status_preview": _bounded_lines(diff_name_lines, 15),
-        "diff_name_status_omitted": max(0, len(diff_name_lines) - 15),
-        "staged_name_status_preview": _bounded_lines(staged_lines, 15),
-        "staged_name_status_omitted": max(0, len(staged_lines) - 15),
+        "status_preview": _bounded_lines(status_lines, 12),
+        "status_omitted": max(0, len(status_lines) - 12),
+        "diff_stat_preview": _bounded_lines(diff_stat_lines, 6),
+        "diff_stat_omitted": max(0, len(diff_stat_lines) - 6),
+        "diff_name_status_preview": _bounded_lines(diff_name_lines, 10),
+        "diff_name_status_omitted": max(0, len(diff_name_lines) - 10),
+        "staged_name_status_preview": _bounded_lines(staged_lines, 10),
+        "staged_name_status_omitted": max(0, len(staged_lines) - 10),
         "error": git_state.get("error") or "",
     }
 
@@ -282,10 +285,54 @@ def _compact_git_state(git_state: dict[str, Any]) -> dict[str, Any]:
 def _compact_previous_result(previous_result: dict[str, Any] | None) -> dict[str, Any]:
     if not previous_result:
         return {"status": "none"}
+
+    command_result = previous_result.get("command_result")
+    decision = previous_result.get("decision")
+    if not isinstance(command_result, dict):
+        return _compact_generic_previous_result(previous_result)
+
+    previous_command = str(command_result.get("command") or "")
+    if not previous_command and isinstance(decision, dict):
+        previous_command = str(decision.get("command") or "")
+
+    compact: dict[str, Any] = {
+        "turn": previous_result.get("turn"),
+        "command": previous_command,
+        "ok": bool(command_result.get("ok")),
+        "exit_code": command_result.get("exit_code"),
+        "timed_out": bool(command_result.get("timed_out")),
+        "skipped": bool(command_result.get("skipped")),
+        "risk": command_result.get("computed_risk") or command_result.get("declared_risk") or "",
+    }
+    skip_reason = str(command_result.get("skip_reason") or "")
+    stderr = str(command_result.get("stderr") or "")
+    stdout = str(command_result.get("stdout") or "")
+    if skip_reason:
+        compact["skip_reason"] = _trim_inline(skip_reason, 240)
+    if stderr:
+        compact["stderr"] = _trim_inline(stderr, 600)
+    if stdout:
+        compact["stdout"] = _trim_inline(stdout, 900)
+    return {key: value for key, value in compact.items() if value not in ("", None)}
+
+
+def _compact_generic_previous_result(previous_result: dict[str, Any]) -> dict[str, Any]:
     compact = dict(previous_result)
     if "git_after" in compact and isinstance(compact["git_after"], dict):
         compact["git_after"] = _compact_git_state(compact["git_after"])
-    return compact
+    text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(text) <= 1800:
+        return compact
+    return {"summary": _trim_inline(text, 1800)}
+
+
+def _trim_inline(text: str, max_chars: int) -> str:
+    text = str(text or "").strip()
+    if len(text) <= max_chars:
+        return text
+    head = max_chars // 2
+    tail = max_chars - head - 32
+    return f"{text[:head]}\n...[trimmed]...\n{text[-tail:]}"
 
 
 def _filtered_lines(text: str) -> list[str]:

@@ -271,6 +271,7 @@ class AppState:
             user_data_dir=self.profile_dir,
             max_timeout_s=int(payload.get("copilot_timeout_s") or 180),
             capture_timeout_s=int(payload.get("capture_timeout_s") or 15),
+            chat_refresh_turns=max(0, int(payload.get("chat_refresh_turns", 12) or 0)),
             retry_once=True,
         )
         max_turns = int(payload.get("max_turns") or 50)

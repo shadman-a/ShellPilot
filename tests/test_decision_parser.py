@@ -88,7 +88,7 @@ class DecisionParserTests(unittest.TestCase):
             turn=1,
             shell=ShellKind.POWERSHELL,
         )
-        self.assertIn("Local command shell:\nPowerShell", prompt)
+        self.assertIn("Shell:\nPowerShell", prompt)
         self.assertIn("Get-Location", prompt)
         self.assertNotIn("Choose exactly one Bash command", prompt)
 

@@ -45,6 +45,10 @@ class RunConfig:
     sample_interval_ms: int = 500
     inter_prompt_delay_s: float = 1.0
     retry_once: bool = True
+    max_prompt_attempts: int = 3
+    chat_refresh_turns: int = 12
+    send_start_timeout_s: float = 6.0
+    no_activity_timeout_s: float = 20.0
 
 
 @dataclass(slots=True)

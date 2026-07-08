@@ -226,6 +226,26 @@ def find_composer(page: Page) -> tuple[Locator | None, str | None]:
     return None, None
 
 
+def read_composer_text(composer: Locator) -> str:
+    try:
+        return str(
+            composer.evaluate(
+                """
+                (el) => {
+                    const tag = (el.tagName || "").toLowerCase();
+                    if (tag === "textarea" || tag === "input") {
+                        return el.value || "";
+                    }
+                    return el.innerText || el.textContent || "";
+                }
+                """
+            )
+            or ""
+        )
+    except Exception:
+        return ""
+
+
 def find_send_control(page: Page) -> tuple[Locator | None, str | None]:
     for context in iter_contexts(page):
         locator, selector = _first_match(context, SEND_BUTTON_SELECTORS)

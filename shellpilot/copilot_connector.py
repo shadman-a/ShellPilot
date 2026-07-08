@@ -6,12 +6,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from playwright.sync_api import BrowserContext, Error, Page, Playwright, sync_playwright
+from playwright.sync_api import BrowserContext, Error, Locator, Page, Playwright, sync_playwright
 
 from . import selectors, storage
 from .models import PromptResult, RunConfig, SelectorTestReport
 from .storage import OutputPaths
-from .utils import EventLogger, StopRequested, is_transient_error, now_iso, select_all_shortcut
+from .utils import EventLogger, StopRequested, now_iso, select_all_shortcut
 
 
 StepCallback = Callable[[str], None]
@@ -145,7 +145,7 @@ class CopilotConnector:
         stop_event: threading.Event,
         step_callback: StepCallback | None,
     ) -> PromptResult:
-        attempts = 2 if config.retry_once else 1
+        attempts = max(1, int(config.max_prompt_attempts)) if config.retry_once else 1
         progress = f"{index}/{total}"
 
         for attempt in range(1, attempts + 1):
@@ -155,14 +155,25 @@ class CopilotConnector:
             status = "success"
             error_text: str | None = None
             baseline_chat_text = ""
+            baseline_assistant_text = ""
 
             try:
                 baseline_chat_text = self._snapshot_chat_text()
+                baseline_assistant_text = self._snapshot_latest_assistant_text()
                 self._emit_step(step_callback, f"Typing ({progress})")
-                self._send_prompt(prompt)
+                self._send_prompt(
+                    prompt,
+                    previous_chat_text=baseline_chat_text,
+                    send_start_timeout_s=config.send_start_timeout_s,
+                )
 
                 self._emit_step(step_callback, f"Waiting ({progress})")
-                self._wait_for_response_completion(config, stop_event)
+                self._wait_for_response_completion(
+                    config,
+                    stop_event,
+                    previous_chat_text=baseline_chat_text,
+                    previous_assistant_text=baseline_assistant_text,
+                )
 
                 self._emit_step(step_callback, f"Copying ({progress})")
                 response_text, tail_fallback = self._capture_latest_response(
@@ -197,8 +208,10 @@ class CopilotConnector:
                     screenshot=screenshot or "",
                 )
 
-                if attempt < attempts and is_transient_error(exc):
+                if attempt < attempts:
                     self._log("WARNING", "prompt_retrying", index=index, attempt=attempt + 1)
+                    self._emit_step(step_callback, f"Recovering ({progress})")
+                    self._recover_after_prompt_failure(config)
                     continue
 
             duration = time.perf_counter() - started
@@ -252,6 +265,16 @@ class CopilotConnector:
         if not text:
             text = selectors.read_chat_text(page, include_frames=True, selector_timeout_ms=500).strip()
         return self._normalize_tail_fallback_response(text) if text else ""
+
+    def _snapshot_latest_assistant_text(self) -> str:
+        try:
+            page = self._require_page()
+            assistant_message, _ = selectors.find_latest_assistant_message(page)
+            if assistant_message is None:
+                return ""
+            return assistant_message.inner_text(timeout=700).strip()
+        except Exception:
+            return ""
 
     @staticmethod
     def _extract_new_chat_text(current_text: str, previous_text: str) -> str:
@@ -386,52 +409,143 @@ class CopilotConnector:
             raise RuntimeError(f"ShellPilot Copilot session is unavailable ({exc}). Sign in again.") from exc
         return page
 
-    def _send_prompt(self, prompt: str) -> None:
+    def _send_prompt(self, prompt: str, *, previous_chat_text: str = "", send_start_timeout_s: float = 6.0) -> None:
         page = self._require_page()
         composer, composer_selector = selectors.find_composer(page)
         if composer is None:
             raise RuntimeError("Could not find prompt input box. Click in the composer once, then check the session.")
 
         self._log("INFO", "composer_detected", selector=composer_selector or "unknown")
-        composer.click(timeout=5000)
+        self._fill_composer(composer, prompt)
+
+        send_button, send_selector = selectors.find_send_control(page)
+        if send_button is not None:
+            try:
+                send_button.click(timeout=2500)
+                if self._wait_for_send_start(composer, prompt, previous_chat_text, timeout_s=send_start_timeout_s):
+                    self._log("INFO", "prompt_sent", method="send_button", selector=send_selector or "unknown")
+                    return
+                self._log("WARNING", "send_button_did_not_submit", selector=send_selector or "unknown")
+            except Error as exc:
+                self._log("WARNING", "send_button_click_failed", selector=send_selector or "unknown", error=str(exc))
+
+        self._focus_composer(composer)
+        try:
+            composer.press("Enter")
+        except Error:
+            page.keyboard.press("Enter")
+        if self._wait_for_send_start(composer, prompt, previous_chat_text, timeout_s=send_start_timeout_s):
+            self._log("INFO", "prompt_sent", method="enter_key")
+            return
+
+        raise TimeoutError("Prompt did not leave the composer before timeout; Copilot may not have received it.")
+
+    def _fill_composer(self, composer: Locator, prompt: str) -> None:
+        page = self._require_page()
+        self._focus_composer(composer)
 
         filled = False
         try:
-            composer.fill(prompt, timeout=5000)
+            composer.fill(prompt, timeout=8000)
             filled = True
         except Error:
             filled = False
 
         if not filled:
-            page.keyboard.press(select_all_shortcut())
-            page.keyboard.insert_text(prompt)
-
-        send_button, send_selector = selectors.find_send_control(page)
-        if send_button is not None:
             try:
-                send_button.click(timeout=3000)
-                self._log("INFO", "prompt_sent", method="send_button", selector=send_selector or "unknown")
-                return
+                page.keyboard.press(select_all_shortcut())
+                page.keyboard.insert_text(prompt)
+                filled = True
             except Error:
-                self._log("WARNING", "send_button_click_failed", selector=send_selector or "unknown")
+                filled = False
 
+        if not self._composer_still_has_prompt(composer, prompt):
+            try:
+                composer.evaluate(
+                    """
+                    (el, value) => {
+                        const tag = (el.tagName || "").toLowerCase();
+                        if (tag === "textarea" || tag === "input") {
+                            const proto = tag === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                            const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+                            if (setter) setter.call(el, value);
+                            else el.value = value;
+                        } else {
+                            el.textContent = value;
+                        }
+                        el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+                        el.dispatchEvent(new Event("change", { bubbles: true }));
+                    }
+                    """,
+                    prompt,
+                )
+                filled = True
+            except Error:
+                filled = False
+
+        if not filled or not self._composer_still_has_prompt(composer, prompt):
+            raise RuntimeError("Could not place the prompt text into the Copilot composer.")
+
+    def _focus_composer(self, composer: Locator) -> None:
         try:
-            composer.press("Enter")
+            composer.click(timeout=5000)
         except Error:
-            page.keyboard.press("Enter")
-        self._log("INFO", "prompt_sent", method="enter_key")
+            try:
+                composer.focus(timeout=1000)
+            except Error:
+                pass
 
-    def _wait_for_response_completion(self, config: RunConfig, stop_event: threading.Event) -> None:
+    def _wait_for_send_start(self, composer: Locator, prompt: str, previous_chat_text: str, *, timeout_s: float) -> bool:
+        page = self._require_page()
+        deadline = time.monotonic() + max(1.0, timeout_s)
+        previous = self._normalize_tail_fallback_response(previous_chat_text or "")
+        while time.monotonic() < deadline:
+            if selectors.has_stop_control_visible(page):
+                return True
+            if not self._composer_still_has_prompt(composer, prompt):
+                return True
+            current_text = selectors.read_chat_text(page, include_frames=False, selector_timeout_ms=300).strip()
+            if current_text:
+                current = self._normalize_tail_fallback_response(current_text)
+                if previous and current != previous:
+                    return True
+            time.sleep(0.2)
+        return False
+
+    @staticmethod
+    def _normalize_prompt_for_compare(text: str) -> str:
+        return " ".join((text or "").split())
+
+    def _composer_still_has_prompt(self, composer: Locator, prompt: str) -> bool:
+        text = selectors.read_composer_text(composer)
+        current = self._normalize_prompt_for_compare(text)
+        expected = self._normalize_prompt_for_compare(prompt)
+        if not current or not expected:
+            return False
+        if current == expected:
+            return True
+        return expected[:240] in current or current[:240] in expected
+
+    def _wait_for_response_completion(
+        self,
+        config: RunConfig,
+        stop_event: threading.Event,
+        *,
+        previous_chat_text: str = "",
+        previous_assistant_text: str = "",
+    ) -> None:
         page = self._require_page()
         deadline = time.monotonic() + max(5, config.max_timeout_s)
         interval_s = max(0.2, config.sample_interval_ms / 1000.0)
         stability_window = max(0.8, config.stability_seconds)
+        no_activity_timeout_s = max(8.0, config.no_activity_timeout_s)
 
-        baseline = selectors.read_chat_text(page, include_frames=False, selector_timeout_ms=900)
-        last_text = baseline
+        last_chat_text = previous_chat_text or selectors.read_chat_text(page, include_frames=False, selector_timeout_ms=900)
+        last_assistant_text = previous_assistant_text
         last_change = time.monotonic()
         started = time.monotonic()
-        saw_change = False
+        saw_chat_activity = False
+        saw_assistant_activity = False
         stop_seen = selectors.has_stop_control_visible(page)
 
         while time.monotonic() < deadline:
@@ -442,29 +556,56 @@ class CopilotConnector:
             if stop_visible:
                 stop_seen = True
 
+            assistant_text = self._snapshot_latest_assistant_text()
+            if assistant_text and assistant_text != last_assistant_text:
+                saw_assistant_activity = True
+                last_assistant_text = assistant_text
+                last_change = time.monotonic()
+
             current_text = selectors.read_chat_text(page, include_frames=False, selector_timeout_ms=900)
-            if current_text != last_text:
-                saw_change = True
-                last_text = current_text
+            if current_text != last_chat_text:
+                saw_chat_activity = True
+                last_chat_text = current_text
                 last_change = time.monotonic()
 
             stable_for = time.monotonic() - last_change
             elapsed = time.monotonic() - started
 
-            if elapsed >= 8.0 and not saw_change and not stop_seen:
+            if elapsed >= no_activity_timeout_s and not saw_assistant_activity and not stop_seen:
                 raise RuntimeError(
-                    "No response activity detected after sending the prompt. Check the session, then click inside the composer once."
+                    "No assistant response activity detected after sending the prompt. Check the Copilot session, then try again."
                 )
 
-            if elapsed >= 1.0 and saw_change and stable_for >= stability_window:
+            if elapsed >= 1.0 and saw_assistant_activity and stable_for >= stability_window:
                 if not stop_seen:
                     return
                 if stop_seen and not stop_visible:
                     return
+            if elapsed >= no_activity_timeout_s and saw_chat_activity and not saw_assistant_activity and stable_for >= stability_window:
+                self._log("WARNING", "assistant_selector_missing_using_chat_activity")
+                return
 
             time.sleep(interval_s)
 
         raise TimeoutError(f"Response did not finish before timeout ({config.max_timeout_s}s).")
+
+    def _recover_after_prompt_failure(self, config: RunConfig) -> None:
+        try:
+            self.start_new_chat(config.copilot_url, config.user_data_dir)
+            self._log("INFO", "prompt_retry_recovered", method="new_chat")
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._log("WARNING", "new_chat_recovery_failed", error=str(exc))
+
+        page = self._page
+        if page is None:
+            return
+        try:
+            page.goto(config.copilot_url, wait_until="domcontentloaded")
+            self._wait_for_new_chat_ready(timeout_s=8.0)
+            self._log("INFO", "prompt_retry_recovered", method="navigate")
+        except Exception as exc:  # noqa: BLE001
+            self._log("WARNING", "navigate_recovery_failed", error=str(exc))
 
     def _wait_for_new_chat_ready(self, timeout_s: float = 8.0) -> None:
         page = self._require_page()

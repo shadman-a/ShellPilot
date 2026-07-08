@@ -73,6 +73,19 @@ class ShellPilotLoop:
                     self._emit("stopped", {"reason": "Stop requested."})
                     return
 
+                refresh_every = max(0, int(run_config.chat_refresh_turns))
+                if refresh_every and turn > 1 and (turn - 1) % refresh_every == 0:
+                    self._emit("step", {"step": f"Refreshing chat ({turn}/{self.max_turns})", "turn": turn})
+                    try:
+                        refresh_result = self.copilot.call(
+                            "start_new_chat",
+                            run_config.copilot_url,
+                            run_config.user_data_dir,
+                        )
+                        self._emit("chat_refreshed", {"turn": turn, "result": refresh_result})
+                    except Exception as exc:  # noqa: BLE001
+                        self._emit("chat_refresh_failed", {"turn": turn, "error": str(exc)})
+
                 git_before = collect_git_state(workspace)
                 self._emit(
                     "turn_started",
@@ -257,8 +270,8 @@ class ShellPilotLoop:
 
     def _result_context(self, record: TurnRecord) -> dict[str, Any]:
         result = dict(record.command_result or {})
-        result["stdout"] = trim_text(str(result.get("stdout") or ""), 1500)
-        result["stderr"] = trim_text(str(result.get("stderr") or ""), 1000)
+        result["stdout"] = trim_text(str(result.get("stdout") or ""), 900)
+        result["stderr"] = trim_text(str(result.get("stderr") or ""), 600)
         return {
             "turn": record.turn,
             "decision": record.decision,

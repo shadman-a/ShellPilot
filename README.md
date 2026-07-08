@@ -42,6 +42,8 @@ http://127.0.0.1:8765/
 
 Use **Approval mode** beside the task prompt to choose how much ShellPilot asks before running commands. **New Chat** creates a new local chat under the current project, clears the active transcript, and starts a fresh Copilot chat thread if Copilot is open while keeping the browser login/profile intact.
 
+For longer runs, **Refresh chat every** starts a fresh Copilot chat after the selected number of turns while preserving ShellPilot's local task, Git state, and previous command result in the next prompt. The default is 12 turns to avoid slow or stuck Copilot threads during extended sessions.
+
 The left sidebar works like Codex:
 
 - **Projects** are selected workspace paths.

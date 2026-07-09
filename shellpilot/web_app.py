@@ -271,10 +271,10 @@ class AppState:
             user_data_dir=self.profile_dir,
             max_timeout_s=int(payload.get("copilot_timeout_s") or 180),
             capture_timeout_s=int(payload.get("capture_timeout_s") or 15),
-            chat_refresh_turns=max(0, int(payload.get("chat_refresh_turns", 12) or 0)),
+            chat_refresh_turns=max(0, int(payload.get("chat_refresh_turns", 10) or 0)),
             retry_once=True,
         )
-        max_turns = int(payload.get("max_turns") or 50)
+        max_turns = int(payload.get("max_turns") or 100)
         command_timeout_s = int(payload.get("command_timeout_s") or 120)
 
         def target() -> None:
@@ -672,15 +672,27 @@ class AppState:
         elif event_type == "turn_result":
             self.latest_command = payload.get("decision")
             self.latest_result = payload.get("command_result")
-            self._touch_active_session(status="running", turn_count=self.current_turn)
+            self._touch_active_session(
+                status="running",
+                turn_count=self.current_turn,
+                run_memory=str(payload.get("run_memory") or ""),
+            )
         elif event_type == "run_error":
             self.current_step = "Error"
             self._touch_active_session(status="error", turn_count=self.current_turn)
         elif event_type == "done":
             self.current_step = "Done"
-            self._touch_active_session(status="done", turn_count=self.current_turn)
+            self._touch_active_session(
+                status="done",
+                turn_count=self.current_turn,
+                run_memory=str(payload.get("run_memory") or ""),
+            )
         elif event_type == "turn_error":
-            self._touch_active_session(status="error", turn_count=self.current_turn)
+            self._touch_active_session(
+                status="error",
+                turn_count=self.current_turn,
+                run_memory=str(payload.get("run_memory") or ""),
+            )
         elif event_type == "stopped":
             self.current_step = "Stopped"
             self._touch_active_session(status="stopped", turn_count=self.current_turn)

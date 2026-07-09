@@ -131,7 +131,7 @@ function formPayload() {
     workspace_dir: latestState ? latestState.workspace_dir : "",
     url: els.urlInput.value,
     profile_dir: els.profileInput.value,
-    max_turns: Number(els.maxTurnsInput.value || 50),
+    max_turns: Number(els.maxTurnsInput.value || 100),
     chat_refresh_turns: Number(els.chatRefreshInput.value || 0),
     command_timeout_s: Number(els.commandTimeoutInput.value || 120),
     copilot_timeout_s: Number(els.copilotTimeoutInput.value || 180),
@@ -349,6 +349,7 @@ function addTurnResult(turn) {
   const result = turn.command_result || {};
   const gitBefore = turn.git_before || {};
   const gitAfter = turn.git_after || {};
+  const decisionText = formatDecisionText(decision);
 
   addMessage("assistant", "Copilot command", `
     <div class="command-card">
@@ -356,7 +357,7 @@ function addTurnResult(turn) {
         <span class="risk ${escapeHtml(result.computed_risk || decision.risk || "read_only")}">${escapeHtml(result.computed_risk || decision.risk || "read_only")}</span>
         <span>${escapeHtml(decision.reason || "No reason provided.")}</span>
       </div>
-      <pre>${escapeHtml(decision.command || "(no command)")}</pre>
+      <pre>${escapeHtml(decisionText || "(no command)")}</pre>
     </div>
   `);
 
@@ -413,7 +414,7 @@ function renderApprovalCard(payload, isPending) {
     : "";
   return `
     <p>${escapeHtml(assessment.reason || decision.reason || "Approval required.")}</p>
-    <pre>${escapeHtml(decision.command || "")}</pre>
+    <pre>${escapeHtml(formatDecisionText(decision))}</pre>
     ${buttons}
   `;
 }
@@ -443,7 +444,7 @@ function renderApproval(pending) {
   const assessment = pending.assessment || {};
   els.approvalPanel.classList.remove("hidden");
   els.approvalReason.textContent = `${assessment.risk || "risk"}: ${assessment.reason || decision.reason || ""}`;
-  els.approvalCommand.textContent = decision.command || "";
+  els.approvalCommand.textContent = formatDecisionText(decision);
   els.approveBtn.dataset.id = pending.id;
   els.denyBtn.dataset.id = pending.id;
 }
@@ -498,12 +499,22 @@ function summarizePayload(payload) {
   if (payload.line) return payload.line;
   if (payload.error) return payload.error;
   if (payload.step) return payload.step;
+  if (payload.signal) return `${payload.signal} (${payload.count || 0}/${payload.threshold || 0})`;
+  if (payload.reason && payload.result) return `chat refreshed: ${payload.reason}`;
+  if (payload.excerpt) return payload.excerpt;
   if (payload.task) return payload.task;
   if (payload.run_folder) return payload.run_folder;
   if (payload.response_excerpt) return payload.response_excerpt;
-  if (payload.decision && payload.decision.command) return payload.decision.command;
+  if (payload.decision && formatDecisionText(payload.decision)) return formatDecisionText(payload.decision);
   if (payload.command_result && payload.command_result.command) return payload.command_result.command;
   return JSON.stringify(payload);
+}
+
+function formatDecisionText(decision) {
+  if (!decision) return "";
+  if (decision.command) return decision.command;
+  if (Array.isArray(decision.script_lines)) return decision.script_lines.join("\n");
+  return "";
 }
 
 function emptyRow(text) {

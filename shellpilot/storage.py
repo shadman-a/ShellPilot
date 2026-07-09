@@ -23,6 +23,7 @@ class OutputPaths:
     run_folder: Path
     copilot_responses_dir: Path
     screenshots_dir: Path
+    scripts_dir: Path
     logs_dir: Path
     turns_jsonl_path: Path
     events_log_path: Path
@@ -121,7 +122,7 @@ def create_session(
     session_id = _new_session_id(project["project_id"])
     session_dir = _session_dir(project["project_id"], session_id)
     paths = _paths_for_session_dir(session_dir)
-    for path in (paths.run_folder, paths.copilot_responses_dir, paths.screenshots_dir, paths.logs_dir):
+    for path in (paths.run_folder, paths.copilot_responses_dir, paths.screenshots_dir, paths.scripts_dir, paths.logs_dir):
         path.mkdir(parents=True, exist_ok=True)
     paths.turns_jsonl_path.touch(exist_ok=True)
     paths.events_log_path.touch(exist_ok=True)
@@ -205,6 +206,19 @@ def save_copilot_response(paths: OutputPaths, result: PromptResult) -> Path:
     return output
 
 
+def save_script(paths: OutputPaths, *, turn: int, shell_kind: str, script_lines: list[str]) -> Path:
+    paths.scripts_dir.mkdir(parents=True, exist_ok=True)
+    if shell_kind == "powershell":
+        output = paths.scripts_dir / f"turn_{turn:03d}.ps1"
+        prelude = ["$ErrorActionPreference = 'Stop'"]
+    else:
+        output = paths.scripts_dir / f"turn_{turn:03d}.sh"
+        prelude = ["set -euo pipefail"]
+    text = "\n".join([*prelude, *script_lines]).rstrip() + "\n"
+    output.write_text(text, encoding="utf-8")
+    return output
+
+
 def append_turn(paths: OutputPaths, turn: TurnRecord) -> None:
     append_jsonl(paths.turns_jsonl_path, turn.to_json_record())
 
@@ -232,6 +246,7 @@ def _paths_for_session_dir(session_dir: Path) -> OutputPaths:
         run_folder=session_dir,
         copilot_responses_dir=session_dir / "copilot_responses",
         screenshots_dir=session_dir / "screenshots",
+        scripts_dir=session_dir / "scripts",
         logs_dir=session_dir / "logs",
         turns_jsonl_path=session_dir / "turns.jsonl",
         events_log_path=session_dir / "logs" / "events.log",

@@ -40,6 +40,21 @@ class StorageTests(unittest.TestCase):
                 self.assertFalse((workspace / ".shellpilot").exists())
                 self.assertTrue((paths.run_folder / "session.json").exists())
                 self.assertTrue(paths.turns_jsonl_path.exists())
+                self.assertTrue(paths.scripts_dir.exists())
+
+    def test_save_script_writes_session_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app_data = Path(temp_dir) / "app" / ".shellpilot"
+            workspace = Path(temp_dir) / "target-repo"
+            workspace.mkdir()
+            with (
+                patch.object(storage, "APP_DATA_ROOT", app_data),
+                patch.object(storage, "PROJECTS_ROOT", app_data / "projects"),
+            ):
+                _, _, paths = storage.create_session(workspace, title="Run script")
+                script_path = storage.save_script(paths, turn=2, shell_kind="bash", script_lines=["pwd", "ls"])
+                self.assertEqual(script_path.name, "turn_002.sh")
+                self.assertIn("set -euo pipefail\npwd\nls\n", script_path.read_text(encoding="utf-8"))
 
     def test_list_and_load_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

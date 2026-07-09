@@ -32,6 +32,7 @@ class ShellKind(StrEnum):
 
 class DecisionAction(StrEnum):
     COMMAND = "command"
+    SCRIPT = "script"
     DONE = "done"
 
 
@@ -46,9 +47,11 @@ class RunConfig:
     inter_prompt_delay_s: float = 1.0
     retry_once: bool = True
     max_prompt_attempts: int = 3
-    chat_refresh_turns: int = 12
+    chat_refresh_turns: int = 10
     send_start_timeout_s: float = 6.0
     no_activity_timeout_s: float = 20.0
+    run_memory_chars: int = 1000
+    stuck_recovery_threshold: int = 2
 
 
 @dataclass(slots=True)
@@ -115,6 +118,7 @@ class PromptResult:
 class CommandDecision:
     action: DecisionAction
     command: str = ""
+    script_lines: list[str] = field(default_factory=list)
     risk: RiskLevel = RiskLevel.READ_ONLY
     reason: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
@@ -198,6 +202,7 @@ class TurnRecord:
     copilot_result: dict[str, Any] | None = None
     approval_required: bool = False
     approval_id: str = ""
+    run_memory: str = ""
     done: bool = False
     error: str = ""
 

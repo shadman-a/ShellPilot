@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from shellpilot.models import RiskLevel, ShellKind
-from shellpilot.risk import classify_command
+from shellpilot.risk import classify_command, classify_script_lines
 
 
 class RiskTests(unittest.TestCase):
@@ -65,6 +65,27 @@ class RiskTests(unittest.TestCase):
     def test_cmd_delete_dangerous(self) -> None:
         assessment = classify_command("del notes.txt", shell=ShellKind.CMD)
         self.assertEqual(assessment.risk, RiskLevel.DANGEROUS)
+
+    def test_script_lines_read_only(self) -> None:
+        assessment = classify_script_lines(["pwd", "ls"])
+        self.assertEqual(assessment.risk, RiskLevel.READ_ONLY)
+        self.assertTrue(assessment.allowed_shape)
+
+    def test_script_lines_block_compound_shell_line(self) -> None:
+        assessment = classify_script_lines(["pwd && ls"])
+        self.assertEqual(assessment.risk, RiskLevel.DANGEROUS)
+        self.assertFalse(assessment.allowed_shape)
+        self.assertIn("Script line 1", assessment.reason)
+
+    def test_powershell_script_write(self) -> None:
+        assessment = classify_script_lines(["Get-Location", "Set-Content notes.txt hello"], shell=ShellKind.POWERSHELL)
+        self.assertEqual(assessment.risk, RiskLevel.WRITE_FILE)
+        self.assertTrue(assessment.allowed_shape)
+
+    def test_cmd_script_not_supported(self) -> None:
+        assessment = classify_script_lines(["dir"], shell=ShellKind.CMD)
+        self.assertEqual(assessment.risk, RiskLevel.DANGEROUS)
+        self.assertFalse(assessment.allowed_shape)
 
 
 if __name__ == "__main__":

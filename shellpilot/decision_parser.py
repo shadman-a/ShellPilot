@@ -12,7 +12,13 @@ class DecisionParseError(ValueError):
 
 
 def parse_decision(text: str) -> CommandDecision:
-    blob, payload = _extract_latest_json_payload(text)
+    try:
+        blob, payload = _extract_latest_json_payload(text)
+    except DecisionParseError:
+        repaired = _repair_non_json_decision(text)
+        if repaired is not None:
+            return repaired
+        raise
     if not isinstance(payload, dict):
         raise DecisionParseError("Copilot JSON decision must be an object.")
 
@@ -20,21 +26,28 @@ def parse_decision(text: str) -> CommandDecision:
     try:
         action = DecisionAction(action_text)
     except ValueError as exc:
-        raise DecisionParseError("Decision action must be 'command' or 'done'.") from exc
+        raise DecisionParseError("Decision action must be 'command', 'script', or 'done'.") from exc
 
     reason = str(payload.get("reason") or "").strip()
     if action == DecisionAction.DONE:
         return CommandDecision(action=action, reason=reason or "Done.", raw=payload)
 
+    risk = _risk_from_payload(payload)
+    if action == DecisionAction.SCRIPT:
+        script_lines = _script_lines_from_payload(payload)
+        if not script_lines:
+            raise DecisionParseError("Script decision must include non-empty script_lines.")
+        return CommandDecision(
+            action=action,
+            script_lines=script_lines,
+            risk=risk,
+            reason=reason or "No reason supplied.",
+            raw=payload,
+        )
+
     command = str(payload.get("command") or "").strip()
     if not command:
         raise DecisionParseError("Command decision must include a non-empty command.")
-
-    risk_text = str(payload.get("risk") or RiskLevel.DANGEROUS.value).strip().lower()
-    try:
-        risk = RiskLevel(risk_text)
-    except ValueError:
-        risk = RiskLevel.DANGEROUS
 
     return CommandDecision(
         action=action,
@@ -43,6 +56,21 @@ def parse_decision(text: str) -> CommandDecision:
         reason=reason or "No reason supplied.",
         raw=payload,
     )
+
+
+def _risk_from_payload(payload: dict[str, Any]) -> RiskLevel:
+    risk_text = str(payload.get("risk") or RiskLevel.DANGEROUS.value).strip().lower()
+    try:
+        return RiskLevel(risk_text)
+    except ValueError:
+        return RiskLevel.DANGEROUS
+
+
+def _script_lines_from_payload(payload: dict[str, Any]) -> list[str]:
+    raw_lines = payload.get("script_lines")
+    if not isinstance(raw_lines, list):
+        return []
+    return [str(line).rstrip() for line in raw_lines if str(line).strip()]
 
 
 def _extract_latest_json_payload(text: str) -> tuple[str, dict[str, Any]]:
@@ -126,6 +154,128 @@ def _parse_jsonish_decision_object(blob: str) -> dict[str, Any] | None:
     return payload
 
 
+def _repair_non_json_decision(text: str) -> CommandDecision | None:
+    normalized = (text or "").strip()
+    if not normalized:
+        return None
+
+    candidates = _repair_command_candidates(normalized)
+    unique_candidates = list(dict.fromkeys(candidates))
+    if len(unique_candidates) > 1:
+        raise DecisionParseError("Copilot response contained multiple possible commands and no valid JSON decision.")
+    if len(unique_candidates) == 1:
+        command = unique_candidates[0]
+        raw = {
+            "action": "command",
+            "command": command,
+            "risk": RiskLevel.DANGEROUS.value,
+            "reason": "Repaired from non-JSON Copilot response.",
+            "repaired": True,
+            "repair_source": "non_json_text",
+            "original_excerpt": _trim_inline(normalized, 500),
+        }
+        return CommandDecision(
+            action=DecisionAction.COMMAND,
+            command=command,
+            risk=RiskLevel.DANGEROUS,
+            reason=str(raw["reason"]),
+            raw=raw,
+        )
+
+    if _looks_like_done_text(normalized):
+        raw = {
+            "action": "done",
+            "reason": "Repaired done response from non-JSON Copilot response.",
+            "repaired": True,
+            "repair_source": "non_json_text",
+            "original_excerpt": _trim_inline(normalized, 500),
+        }
+        return CommandDecision(action=DecisionAction.DONE, reason=str(raw["reason"]), raw=raw)
+
+    return None
+
+
+def _repair_command_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+
+    for match in re.finditer(
+        r"(?im)^\s*(?:next\s+command|command|run)\s*:\s*`?([^\n`]+?)`?\s*$",
+        text,
+    ):
+        _append_shell_candidate(candidates, match.group(1))
+
+    for match in re.finditer(r"(?m)^\s*(?:\$|PS>|>)\s+(.+?)\s*$", text):
+        _append_shell_candidate(candidates, match.group(1))
+
+    for fence in re.findall(r"```(?:bash|sh|shell|powershell|pwsh|cmd)?\s*\n?(.*?)```", text, re.IGNORECASE | re.DOTALL):
+        lines = [line.strip() for line in fence.splitlines() if line.strip() and not line.strip().startswith("#")]
+        if len(lines) == 1:
+            _append_shell_candidate(candidates, lines[0])
+
+    for match in re.finditer(r"`([^`\n]+)`", text):
+        _append_shell_candidate(candidates, match.group(1))
+
+    return candidates
+
+
+def _append_shell_candidate(candidates: list[str], value: str) -> None:
+    command = value.strip().rstrip(".")
+    if _looks_like_shell_command(command):
+        candidates.append(command)
+
+
+def _looks_like_shell_command(command: str) -> bool:
+    if not command or "{" in command or "}" in command:
+        return False
+    first = command.split(maxsplit=1)[0].strip().lower()
+    known = {
+        "pwd",
+        "ls",
+        "dir",
+        "find",
+        "cat",
+        "type",
+        "cd",
+        "echo",
+        "grep",
+        "rg",
+        "wc",
+        "head",
+        "tail",
+        "sed",
+        "sort",
+        "uniq",
+        "git",
+        "file",
+        "stat",
+        "du",
+        "python",
+        "python3",
+        "touch",
+        "mkdir",
+        "cp",
+        "mv",
+        "curl",
+        "get-location",
+        "get-childitem",
+        "get-content",
+        "select-string",
+        "set-content",
+        "new-item",
+    }
+    return first in known or first.startswith("get-") or first.startswith("set-") or first.startswith("new-")
+
+
+def _looks_like_done_text(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(done|complete|completed|finished|task complete|nothing else|no further (?:action|commands?)|no command needed)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _extract_jsonish_field(blob: str, field: str, *, next_field: str | None = None) -> str | None:
     if next_field:
         pattern = rf'"{re.escape(field)}"\s*:\s*"(.*)"\s*,\s*"{re.escape(next_field)}"\s*:'
@@ -164,11 +314,19 @@ def decision_prompt(
     previous_result: dict[str, Any] | None,
     turn: int,
     shell: ShellKind | str = ShellKind.BASH,
+    run_memory: str = "",
 ) -> str:
     previous_json = json.dumps(_compact_previous_result(previous_result), ensure_ascii=False, separators=(",", ":"))
-    git_json = json.dumps(_compact_git_state(git_state), ensure_ascii=False, separators=(",", ":"))
+    include_git_details = _git_details_needed(task, previous_result)
+    git_json = json.dumps(
+        _compact_git_state(git_state, include_details=include_git_details),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     shell_kind = ShellKind(shell)
     shell_rules = _shell_rules(shell_kind)
+    script_example = _script_example(shell_kind)
+    run_memory_block = _run_memory_block(run_memory)
     return f"""
 You are ShellPilot. Return one local shell decision as strict JSON.
 
@@ -186,33 +344,44 @@ Git:
 
 Previous result:
 {previous_json}
+{run_memory_block}
 
 Rules:
 - Return exactly one JSON object and nothing else.
-- Choose exactly one {shell_rules["name"]} command for the next turn, or return done.
-- No markdown, code fences, commentary, plans, or multiple commands.
+- Choose one command action, one script action for 2+ dependent simple Bash/PowerShell steps, or done.
+- No markdown, code fences, commentary, or plans.
 - Escape double quotes inside the JSON command string.
 - Prefer simple commands that avoid nested double quotes.
 {shell_rules["guidance"]}
 - Treat every turn as self-contained. Use this prompt, Git state, and previous result.
+- Git details are omitted unless needed; run a read-only Git command if you need exact status or diff.
 - If the previous command failed or was skipped, adapt from that result instead of repeating it unchanged.
 - Inspect before edit. Prefer read-only commands until you know the repo shape.
 - Do not assume repo structure.
 - Use Git as the source of truth for status, diffs, and audit trail.
 - The local app will risk-check and approval-gate all non-read-only commands.
 - Avoid destructive, package install, process killing, and system-level commands.
-- One shell command only. No unquoted newlines, unquoted semicolons, &, &&, or ||. Pipes are allowed.
+- Command action: one shell command only. No unquoted newlines, unquoted semicolons, &, &&, or ||. Pipes are allowed.
+- Script action: each script_lines item must follow the same one-command separator rules.
 - Semicolons inside a quoted `python3 -c '...'` program are allowed.
 - Return done when the task is complete or no safe single next command remains.
 
 Valid command JSON:
 {shell_rules["example"]}
+{script_example}
 
 Valid done JSON:
 {{"action":"done","reason":"Task complete."}}
 
 Turn: {turn}
 """.strip()
+
+
+def _run_memory_block(run_memory: str) -> str:
+    memory = str(run_memory or "").strip()
+    if not memory:
+        return ""
+    return f"\nRun memory:\n{memory}"
 
 
 def _shell_rules(shell: ShellKind) -> dict[str, str]:
@@ -257,18 +426,84 @@ def _shell_rules(shell: ShellKind) -> dict[str, str]:
     }
 
 
-def _compact_git_state(git_state: dict[str, Any]) -> dict[str, Any]:
+def _script_example(shell: ShellKind) -> str:
+    if shell == ShellKind.CMD:
+        return ""
+    if shell == ShellKind.POWERSHELL:
+        return (
+            '\n\nValid script JSON for 2+ dependent simple PowerShell steps:\n'
+            '{"action":"script","script_lines":["Get-ChildItem","Get-Content README.md"],'
+            '"risk":"read_only","reason":"Run dependent inspection steps together."}'
+        )
+    return (
+        '\n\nValid script JSON for 2+ dependent simple Bash steps:\n'
+        '{"action":"script","script_lines":["pwd","ls"],'
+        '"risk":"read_only","reason":"Run dependent inspection steps together."}'
+    )
+
+
+def _git_details_needed(task: str, previous_result: dict[str, Any] | None) -> bool:
+    keywords = (
+        "git",
+        "status",
+        "diff",
+        "commit",
+        "branch",
+        "staging",
+        "stage",
+        "staged",
+        "unstaged",
+        "push",
+        "pull",
+        "merge",
+        "rebase",
+        "checkout",
+        "switch",
+        "stash",
+        "tag",
+        "remote",
+    )
+    task_lower = str(task or "").lower()
+    if any(keyword in task_lower for keyword in keywords):
+        return True
+    return _previous_result_used_git(previous_result)
+
+
+def _previous_result_used_git(previous_result: dict[str, Any] | None) -> bool:
+    if not isinstance(previous_result, dict):
+        return False
+    command_result = previous_result.get("command_result")
+    decision = previous_result.get("decision")
+    commands: list[str] = []
+    if isinstance(command_result, dict):
+        commands.append(str(command_result.get("command") or ""))
+    if isinstance(decision, dict):
+        commands.append(str(decision.get("command") or ""))
+        raw_lines = decision.get("script_lines")
+        if isinstance(raw_lines, list):
+            commands.extend(str(line) for line in raw_lines)
+    return any(command.strip().lower().startswith("git ") or command.strip().lower() == "git" for command in commands)
+
+
+def _compact_git_state(git_state: dict[str, Any], *, include_details: bool = True) -> dict[str, Any]:
     status_lines = _filtered_lines(str(git_state.get("status_short") or ""))
     diff_stat_lines = _filtered_lines(str(git_state.get("diff_stat") or ""))
     diff_name_lines = _filtered_lines(str(git_state.get("diff_name_status") or ""))
     staged_lines = _filtered_lines(str(git_state.get("staged_name_status") or ""))
 
-    return {
+    minimal = {
         "is_git_repo": bool(git_state.get("is_git_repo")),
-        "workspace": git_state.get("workspace") or "",
-        "git_root": git_state.get("git_root") or "",
         "branch": git_state.get("branch") or "",
         "dirty": bool(git_state.get("dirty")),
+        "details_included": False,
+    }
+    if not include_details:
+        return minimal
+
+    return minimal | {
+        "details_included": True,
+        "workspace": git_state.get("workspace") or "",
+        "git_root": git_state.get("git_root") or "",
         "status_counts": _status_counts(status_lines),
         "status_preview": _bounded_lines(status_lines, 12),
         "status_omitted": max(0, len(status_lines) - 12),
@@ -319,7 +554,7 @@ def _compact_previous_result(previous_result: dict[str, Any] | None) -> dict[str
 def _compact_generic_previous_result(previous_result: dict[str, Any]) -> dict[str, Any]:
     compact = dict(previous_result)
     if "git_after" in compact and isinstance(compact["git_after"], dict):
-        compact["git_after"] = _compact_git_state(compact["git_after"])
+        compact["git_after"] = _compact_git_state(compact["git_after"], include_details=True)
     text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     if len(text) <= 1800:
         return compact

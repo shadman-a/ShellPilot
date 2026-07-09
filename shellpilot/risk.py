@@ -101,6 +101,35 @@ def classify_command(command: str, shell: ShellKind | str = ShellKind.BASH) -> R
     return RiskAssessment(highest, True, "; ".join(reasons))
 
 
+def classify_script_lines(script_lines: list[str], shell: ShellKind | str = ShellKind.BASH) -> RiskAssessment:
+    shell_kind = ShellKind(shell)
+    if shell_kind == ShellKind.CMD:
+        return RiskAssessment(RiskLevel.DANGEROUS, False, "Script decisions are only supported for Bash and PowerShell.")
+
+    executable_lines = [
+        line.strip()
+        for line in script_lines
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if not executable_lines:
+        return RiskAssessment(RiskLevel.DANGEROUS, False, "Script decision did not include executable lines.")
+
+    highest = RiskLevel.READ_ONLY
+    reasons: list[str] = []
+    for index, line in enumerate(executable_lines, start=1):
+        assessment = classify_command(line, shell=shell_kind)
+        if not assessment.allowed_shape:
+            return RiskAssessment(
+                RiskLevel.DANGEROUS,
+                False,
+                f"Script line {index} is not allowed: {assessment.reason}",
+            )
+        highest = _max_risk(highest, assessment.risk)
+        reasons.append(f"line {index}: {assessment.reason}")
+
+    return RiskAssessment(highest, True, "; ".join(reasons))
+
+
 def requires_approval(risk: RiskLevel) -> bool:
     return risk != RiskLevel.READ_ONLY
 

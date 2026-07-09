@@ -175,7 +175,7 @@ class CopilotConnector:
                     previous_assistant_text=baseline_assistant_text,
                 )
 
-                self._emit_step(step_callback, f"Copying ({progress})")
+                self._emit_step(step_callback, f"Capturing ({progress})")
                 response_text, tail_fallback = self._capture_latest_response(
                     config,
                     previous_chat_text=baseline_chat_text,
@@ -333,6 +333,11 @@ class CopilotConnector:
         markers = (
             "Current Git state:",
             "Previous command result:",
+            "Workspace:",
+            "Task:",
+            "Git:",
+            "Previous result:",
+            "Run memory:",
             "Rules:",
             "Valid command JSON:",
             "Valid done JSON:",
@@ -635,6 +640,19 @@ class CopilotConnector:
         if assistant_message is not None:
             self._log("INFO", "assistant_message_detected", selector=message_selector or "unknown")
 
+            message_text = ""
+            remaining_ms = int((capture_deadline - time.monotonic()) * 1000)
+            if remaining_ms > 0:
+                inner_text_timeout_ms = int(min(1500, max(250, remaining_ms)))
+                try:
+                    message_text = assistant_message.inner_text(timeout=inner_text_timeout_ms).strip()
+                except Exception:
+                    message_text = ""
+
+            if message_text:
+                self._log("INFO", "response_captured", method="assistant_container")
+                return message_text, False
+
             copy_button, copy_selector = selectors.find_copy_button_in_message(assistant_message)
             if copy_button is not None:
                 click_timeout_ms = int(min(1200, max(250, (capture_deadline - time.monotonic()) * 1000)))
@@ -650,19 +668,6 @@ class CopilotConnector:
                             time.sleep(0.15)
                     except Error:
                         self._log("WARNING", "copy_button_capture_failed", selector=copy_selector or "unknown")
-
-            message_text = ""
-            remaining_ms = int((capture_deadline - time.monotonic()) * 1000)
-            if remaining_ms > 0:
-                inner_text_timeout_ms = int(min(1500, max(250, remaining_ms)))
-                try:
-                    message_text = assistant_message.inner_text(timeout=inner_text_timeout_ms).strip()
-                except Exception:
-                    message_text = ""
-
-            if message_text:
-                self._log("INFO", "response_captured", method="assistant_container")
-                return message_text, False
 
         chat_tail = selectors.read_chat_text(page, include_frames=False, selector_timeout_ms=700).strip()
         if not chat_tail and time.monotonic() < capture_deadline:

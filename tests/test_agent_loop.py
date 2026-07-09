@@ -288,6 +288,9 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("alpha.txt", records[0]["command_result"]["stdout"])
         self.assertTrue(records[0]["command_result"]["ok"])
         self.assertTrue(any(event == "script_saved" for event, _ in events))
+        step_values = [payload.get("step") for event, payload in events if event == "step"]
+        self.assertIn("Running script (1/1)", step_values)
+        self.assertIn("Recording result (1/1)", step_values)
 
     def test_prompt_omits_git_details_but_turn_records_keep_full_git_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

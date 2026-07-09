@@ -156,30 +156,46 @@ class CopilotConnector:
             error_text: str | None = None
             baseline_chat_text = ""
             baseline_assistant_text = ""
+            send_duration = 0.0
+            wait_duration = 0.0
+            capture_duration = 0.0
 
             try:
                 baseline_chat_text = self._snapshot_chat_text()
                 baseline_assistant_text = self._snapshot_latest_assistant_text()
                 self._emit_step(step_callback, f"Typing ({progress})")
-                self._send_prompt(
-                    prompt,
-                    previous_chat_text=baseline_chat_text,
-                    send_start_timeout_s=config.send_start_timeout_s,
-                )
+                phase_started = time.perf_counter()
+                try:
+                    self._send_prompt(
+                        prompt,
+                        previous_chat_text=baseline_chat_text,
+                        previous_assistant_text=baseline_assistant_text,
+                        send_start_timeout_s=config.send_start_timeout_s,
+                    )
+                finally:
+                    send_duration = time.perf_counter() - phase_started
 
                 self._emit_step(step_callback, f"Waiting ({progress})")
-                self._wait_for_response_completion(
-                    config,
-                    stop_event,
-                    previous_chat_text=baseline_chat_text,
-                    previous_assistant_text=baseline_assistant_text,
-                )
+                phase_started = time.perf_counter()
+                try:
+                    self._wait_for_response_completion(
+                        config,
+                        stop_event,
+                        previous_chat_text=baseline_chat_text,
+                        previous_assistant_text=baseline_assistant_text,
+                    )
+                finally:
+                    wait_duration = time.perf_counter() - phase_started
 
                 self._emit_step(step_callback, f"Capturing ({progress})")
-                response_text, tail_fallback = self._capture_latest_response(
-                    config,
-                    previous_chat_text=baseline_chat_text,
-                )
+                phase_started = time.perf_counter()
+                try:
+                    response_text, tail_fallback = self._capture_latest_response(
+                        config,
+                        previous_chat_text=baseline_chat_text,
+                    )
+                finally:
+                    capture_duration = time.perf_counter() - phase_started
                 if tail_fallback:
                     response_text = self._normalize_tail_fallback_response(response_text)
                     if self._looks_like_prompt_echo(response_text):
@@ -239,6 +255,16 @@ class CopilotConnector:
                 duration_s=round(duration, 3),
                 response_chars=len(response_text or ""),
                 tail_fallback=tail_fallback,
+            )
+            self._log(
+                "INFO",
+                "prompt_timing",
+                index=index,
+                attempt=attempt,
+                send_s=round(send_duration, 3),
+                wait_s=round(wait_duration, 3),
+                capture_s=round(capture_duration, 3),
+                total_s=round(duration, 3),
             )
             if status == "stopped":
                 stop_event.set()
@@ -414,7 +440,14 @@ class CopilotConnector:
             raise RuntimeError(f"ShellPilot Copilot session is unavailable ({exc}). Sign in again.") from exc
         return page
 
-    def _send_prompt(self, prompt: str, *, previous_chat_text: str = "", send_start_timeout_s: float = 6.0) -> None:
+    def _send_prompt(
+        self,
+        prompt: str,
+        *,
+        previous_chat_text: str = "",
+        previous_assistant_text: str = "",
+        send_start_timeout_s: float = 6.0,
+    ) -> None:
         page = self._require_page()
         composer, composer_selector = selectors.find_composer(page)
         if composer is None:
@@ -427,7 +460,13 @@ class CopilotConnector:
         if send_button is not None:
             try:
                 send_button.click(timeout=2500)
-                if self._wait_for_send_start(composer, prompt, previous_chat_text, timeout_s=send_start_timeout_s):
+                if self._wait_for_send_start(
+                    composer,
+                    prompt,
+                    previous_chat_text,
+                    previous_assistant_text=previous_assistant_text,
+                    timeout_s=send_start_timeout_s,
+                ):
                     self._log("INFO", "prompt_sent", method="send_button", selector=send_selector or "unknown")
                     return
                 self._log("WARNING", "send_button_did_not_submit", selector=send_selector or "unknown")
@@ -439,7 +478,13 @@ class CopilotConnector:
             composer.press("Enter")
         except Error:
             page.keyboard.press("Enter")
-        if self._wait_for_send_start(composer, prompt, previous_chat_text, timeout_s=send_start_timeout_s):
+        if self._wait_for_send_start(
+            composer,
+            prompt,
+            previous_chat_text,
+            previous_assistant_text=previous_assistant_text,
+            timeout_s=send_start_timeout_s,
+        ):
             self._log("INFO", "prompt_sent", method="enter_key")
             return
 
@@ -500,20 +545,35 @@ class CopilotConnector:
             except Error:
                 pass
 
-    def _wait_for_send_start(self, composer: Locator, prompt: str, previous_chat_text: str, *, timeout_s: float) -> bool:
+    def _wait_for_send_start(
+        self,
+        composer: Locator,
+        prompt: str,
+        previous_chat_text: str,
+        *,
+        previous_assistant_text: str = "",
+        timeout_s: float,
+    ) -> bool:
         page = self._require_page()
         deadline = time.monotonic() + max(1.0, timeout_s)
         previous = self._normalize_tail_fallback_response(previous_chat_text or "")
+        previous_assistant = (previous_assistant_text or "").strip()
+        next_chat_probe = time.monotonic() + min(1.0, max(0.5, timeout_s / 3))
         while time.monotonic() < deadline:
             if selectors.has_stop_control_visible(page):
                 return True
             if not self._composer_still_has_prompt(composer, prompt):
                 return True
-            current_text = selectors.read_chat_text(page, include_frames=False, selector_timeout_ms=300).strip()
-            if current_text:
-                current = self._normalize_tail_fallback_response(current_text)
-                if previous and current != previous:
-                    return True
+            current_assistant = self._snapshot_latest_assistant_text()
+            if current_assistant and current_assistant != previous_assistant:
+                return True
+            if time.monotonic() >= next_chat_probe:
+                current_text = selectors.read_chat_text(page, include_frames=False, selector_timeout_ms=500).strip()
+                if current_text:
+                    current = self._normalize_tail_fallback_response(current_text)
+                    if previous and current != previous:
+                        return True
+                next_chat_probe = time.monotonic() + min(2.0, max(0.8, timeout_s / 2))
             time.sleep(0.2)
         return False
 
@@ -545,13 +605,14 @@ class CopilotConnector:
         stability_window = max(0.8, config.stability_seconds)
         no_activity_timeout_s = max(8.0, config.no_activity_timeout_s)
 
-        last_chat_text = previous_chat_text or selectors.read_chat_text(page, include_frames=False, selector_timeout_ms=900)
+        last_chat_text = previous_chat_text or ""
         last_assistant_text = previous_assistant_text
         last_change = time.monotonic()
         started = time.monotonic()
         saw_chat_activity = False
         saw_assistant_activity = False
         stop_seen = selectors.has_stop_control_visible(page)
+        next_chat_probe = started + max(2.0, interval_s * 4)
 
         while time.monotonic() < deadline:
             if stop_event.is_set():
@@ -567,14 +628,17 @@ class CopilotConnector:
                 last_assistant_text = assistant_text
                 last_change = time.monotonic()
 
-            current_text = selectors.read_chat_text(page, include_frames=False, selector_timeout_ms=900)
-            if current_text != last_chat_text:
-                saw_chat_activity = True
-                last_chat_text = current_text
-                last_change = time.monotonic()
+            now = time.monotonic()
+            elapsed = now - started
+            if not saw_assistant_activity and now >= next_chat_probe:
+                current_text = selectors.read_chat_text(page, include_frames=False, selector_timeout_ms=700).strip()
+                if last_chat_text and current_text != last_chat_text:
+                    saw_chat_activity = True
+                    last_chat_text = current_text
+                    last_change = now
+                next_chat_probe = now + min(3.0, max(1.5, interval_s * 6))
 
-            stable_for = time.monotonic() - last_change
-            elapsed = time.monotonic() - started
+            stable_for = now - last_change
 
             if elapsed >= no_activity_timeout_s and not saw_assistant_activity and not stop_seen:
                 raise RuntimeError(
@@ -590,7 +654,8 @@ class CopilotConnector:
                 self._log("WARNING", "assistant_selector_missing_using_chat_activity")
                 return
 
-            time.sleep(interval_s)
+            poll_interval = min(1.0, max(interval_s, 0.2 + (elapsed / 15.0)))
+            time.sleep(poll_interval)
 
         raise TimeoutError(f"Response did not finish before timeout ({config.max_timeout_s}s).")
 
@@ -741,13 +806,41 @@ class CopilotWorker:
         self._thread = threading.Thread(target=self._run, name="shellpilot-copilot", daemon=True)
         self._thread.start()
 
-    def call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+    def call(self, method: str, *args: Any, wait_timeout_s: float | None = None, **kwargs: Any) -> Any:
+        if not self._thread.is_alive():
+            self._log("ERROR", "worker_health", status="stopped", method=method)
+            raise RuntimeError("Copilot worker stopped unexpectedly. Restart ShellPilot to recover the browser session.")
         result_queue: queue.Queue[Any] = queue.Queue(maxsize=1)
         self._queue.put((method, args, kwargs, result_queue))
-        ok, payload = result_queue.get()
+        timeout_s = wait_timeout_s if wait_timeout_s is not None else self._call_timeout(method, kwargs)
+        try:
+            ok, payload = result_queue.get(timeout=max(1.0, timeout_s))
+        except queue.Empty as exc:
+            stop_event = kwargs.get("stop_event")
+            if isinstance(stop_event, threading.Event):
+                stop_event.set()
+            self._log("ERROR", "worker_health", status="timeout", method=method, timeout_s=round(timeout_s, 1))
+            raise RuntimeError(f"Copilot worker did not finish {method} within {round(timeout_s)} seconds.") from exc
         if ok:
             return payload
         raise payload
+
+    @staticmethod
+    def _call_timeout(method: str, kwargs: dict[str, Any]) -> float:
+        if method == "send_turn":
+            config = kwargs.get("config")
+            max_timeout = float(getattr(config, "max_timeout_s", 180))
+            capture_timeout = float(getattr(config, "capture_timeout_s", 15))
+            send_timeout = float(getattr(config, "send_start_timeout_s", 6))
+            attempts = int(getattr(config, "max_prompt_attempts", 3)) if getattr(config, "retry_once", True) else 1
+            return max(60.0, attempts * (max_timeout + capture_timeout + send_timeout + 20.0))
+        return {
+            "open_copilot": 60.0,
+            "test_selectors": 30.0,
+            "start_new_chat": 45.0,
+            "set_event_logger": 10.0,
+            "__close__": 15.0,
+        }.get(method, 30.0)
 
     def _run(self) -> None:
         connector = CopilotConnector(ui_log_callback=self._ui_log_callback)
@@ -761,6 +854,13 @@ class CopilotWorker:
                 result = getattr(connector, method)(*args, **kwargs)
                 result_queue.put((True, result))
             except Exception as exc:  # noqa: BLE001
+                self._log("ERROR", "worker_call_failed", method=method, error=str(exc))
+                if isinstance(exc, Error) and method != "__close__":
+                    self._log("ERROR", "worker_health", status="degraded", method=method, error=str(exc))
+                    try:
+                        connector.close()
+                    except Exception:
+                        pass
                 result_queue.put((False, exc))
 
     def close(self) -> None:
@@ -768,3 +868,12 @@ class CopilotWorker:
             self.call("__close__")
         except Exception:
             pass
+
+    def _log(self, level: str, event: str, **fields: object) -> None:
+        if not self._ui_log_callback:
+            return
+        details = ", ".join(f"{key}={value}" for key, value in fields.items())
+        line = f"[{now_iso()}] {level.upper()} {event}"
+        if details:
+            line = f"{line} | {details}"
+        self._ui_log_callback(line)

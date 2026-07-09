@@ -19,7 +19,7 @@
       })();
     </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="stylesheet" href="/styles.css?v=20260709-ui1" />
+    <link rel="stylesheet" href="/styles.css?v=20260709-ui4" />
   </head>
   <body>
     <div class="app-shell">
@@ -72,6 +72,11 @@
             <p id="activeSessionTitle">Choose a project or start a new chat.</p>
           </div>
           <div class="header-meta">
+            <span id="activityStatus" class="activity-status neutral" aria-live="polite">
+              <span class="activity-spinner" aria-hidden="true"></span>
+              <span id="activityLabel">Idle</span>
+              <span id="activityElapsed" aria-hidden="true"></span>
+            </span>
             <span id="turnStatus" class="chip">Turn 0</span>
             <span id="runFolder" class="chip muted" title="Run artifacts">(none)</span>
           </div>
@@ -177,6 +182,7 @@
       </section>
     </div>
 
-    <script src="/app.js?v=20260709-ui1"></script>
+    <script src="/response.js?v=20260709-ui4"></script>
+    <script src="/app.js?v=20260709-ui4"></script>
   </body>
 </html>

@@ -103,6 +103,12 @@ button.danger {
   color: white;
 }
 
+button.danger:disabled {
+  border-color: var(--line);
+  background: var(--surface-hover);
+  color: var(--muted-2);
+}
+
 button.compact {
   min-height: 34px;
   padding: 0 10px;
@@ -194,8 +200,8 @@ p {
 }
 
 .log-section {
-  flex: 0 1 180px;
-  min-height: 84px;
+  flex: 0 0 132px;
+  min-height: 64px;
 }
 
 .section-title {
@@ -224,19 +230,20 @@ p {
 }
 
 .project-group {
-  padding: 2px 0 6px;
+  padding: 1px 0 4px;
 }
 
 .project-row,
 .session-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  grid-template-columns: 26px minmax(0, 1fr) 28px;
   gap: 4px;
   align-items: center;
 }
 
 .session-row {
-  margin-left: 26px;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  margin-left: 22px;
 }
 
 .project-button,
@@ -256,14 +263,15 @@ p {
 }
 
 .project-button {
-  grid-template-columns: 22px minmax(0, 1fr);
+  grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: center;
+  padding: 8px 9px;
 }
 
 .session-button {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
-  padding: 8px 11px;
+  padding: 7px 9px;
 }
 
 .project-button:hover:not(:disabled),
@@ -279,6 +287,31 @@ p {
 
 .project-icon {
   color: var(--muted);
+}
+
+.project-toggle {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  min-width: 26px;
+  min-height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-2);
+  box-shadow: none;
+  font-size: 14px;
+}
+
+.project-toggle:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+  filter: none;
+}
+
+.nested-session-list.collapsed {
+  display: none;
 }
 
 .delete-button {
@@ -312,6 +345,19 @@ p {
   color: var(--muted-2);
   font-size: 12px;
   font-weight: 650;
+}
+
+.item-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted-2);
+  font-size: 11px;
+  font-weight: 760;
 }
 
 .sidebar-item .item-title,
@@ -404,6 +450,78 @@ p {
   border-color: color-mix(in srgb, var(--green) 40%, var(--line));
   background: var(--green-soft);
   color: var(--green);
+}
+
+.activity-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  max-width: min(260px, 35vw);
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.activity-status.running {
+  border-color: color-mix(in srgb, var(--green) 45%, var(--line));
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.activity-status.error {
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line));
+  background: color-mix(in srgb, var(--red) 10%, var(--surface));
+  color: var(--red);
+}
+
+.activity-spinner {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.45;
+}
+
+.activity-status.running .activity-spinner {
+  animation: activity-pulse 1.2s ease-in-out infinite;
+  opacity: 1;
+}
+
+#activityElapsed {
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+
+#activityLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes activity-pulse {
+  0%,
+  100% {
+    transform: scale(0.72);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-status.running .activity-spinner {
+    animation: none;
+  }
 }
 
 .status-pill.neutral,
@@ -669,6 +787,22 @@ pre {
   background: var(--surface);
   color: var(--muted);
   font-size: 12px;
+}
+
+.transcript-history-toggle {
+  display: block;
+  min-height: 34px;
+  margin: 0 auto 16px;
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  box-shadow: none;
+}
+
+.transcript-history-toggle:hover:not(:disabled) {
+  background: var(--surface-hover);
+  filter: none;
 }
 
 .inline-actions {

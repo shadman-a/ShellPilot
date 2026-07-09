@@ -51,6 +51,40 @@ class WebAppStateTests(unittest.TestCase):
         self.assertEqual(payload["approval_mode"], ApprovalMode.ASK.value)
         self.assertIn(payload["shell_kind"], {shell.value for shell in ShellKind})
 
+    def test_live_events_have_monotonic_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = AppState(default_workspace=Path(temp_dir))
+            try:
+                state.emit("first", {})
+                state.emit("second", {})
+                payload = state.to_json()
+            finally:
+                state.copilot.close()
+
+        self.assertEqual([event["id"] for event in payload["events"]], [1, 2])
+        self.assertEqual(payload["event_seq"], 2)
+
+    def test_live_turn_events_are_compact_but_saved_records_can_remain_full(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = AppState(default_workspace=Path(temp_dir))
+            try:
+                state.emit(
+                    "turn_result",
+                    {
+                        "turn": 1,
+                        "copilot_result": {"response_text": "x" * 5000},
+                        "command_result": {"stdout": "y" * 5000, "stderr": "z" * 5000},
+                    },
+                )
+                payload = state.to_json()
+            finally:
+                state.copilot.close()
+
+        event_payload = payload["events"][0]["payload"]
+        self.assertNotIn("copilot_result", event_payload)
+        self.assertLessEqual(len(event_payload["command_result"]["stdout"]), 2400)
+        self.assertLessEqual(len(event_payload["command_result"]["stderr"]), 2400)
+
     def test_empty_task_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = AppState(default_workspace=Path(temp_dir))

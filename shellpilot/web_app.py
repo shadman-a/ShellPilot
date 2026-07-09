@@ -32,7 +32,7 @@ from .storage import (
     output_paths_for_session,
     update_session,
 )
-from .utils import now_iso
+from .utils import now_iso, trim_text
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -89,8 +89,47 @@ def _events_from_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
             event_type = "done"
         elif turn.get("error"):
             event_type = "turn_error"
-        events.append({"ts": str(turn.get("ts") or now_iso()), "type": event_type, "payload": turn})
+        events.append(_compact_ui_event({"ts": str(turn.get("ts") or now_iso()), "type": event_type, "payload": turn}))
     return events
+
+
+def _compact_ui_event(event: dict[str, Any]) -> dict[str, Any]:
+    event_type = str(event.get("type") or "")
+    payload = dict(event.get("payload") or {})
+    if event_type in {"turn_result", "turn_error", "done", "approval_required"}:
+        payload.pop("copilot_result", None)
+        for key in ("git_before", "git_after"):
+            if isinstance(payload.get(key), dict):
+                payload[key] = _compact_git_state(payload[key])
+        command_result = payload.get("command_result")
+        if isinstance(command_result, dict):
+            compact_result = dict(command_result)
+            for key in ("stdout", "stderr"):
+                if key in compact_result:
+                    compact_result[key] = trim_text(str(compact_result.get(key) or ""), 2400)
+            payload["command_result"] = compact_result
+    return {"id": event.get("id"), "ts": event.get("ts") or now_iso(), "type": event_type, "payload": payload}
+
+
+def _compact_git_state(git_state: dict[str, Any]) -> dict[str, Any]:
+    compact: dict[str, Any] = {}
+    for key in (
+        "is_git_repo",
+        "workspace",
+        "git_root",
+        "branch",
+        "status_short",
+        "diff_stat",
+        "diff_name_status",
+        "staged_name_status",
+        "error",
+        "dirty",
+    ):
+        if key not in git_state:
+            continue
+        value = git_state[key]
+        compact[key] = trim_text(str(value), 1400) if isinstance(value, str) else value
+    return compact
 
 
 def _latest_turn_with_result(turns: list[dict[str, Any]]) -> dict[str, Any]:
@@ -127,6 +166,7 @@ class AppState:
         self._approval_condition = threading.Condition(self.lock)
         self._approval_answers: dict[str, bool] = {}
         self.events: list[dict[str, Any]] = []
+        self.event_seq = 0
         if project.get("last_session_id"):
             self._load_session_locked(self.active_project_id, str(project["last_session_id"]))
 
@@ -166,6 +206,7 @@ class AppState:
                 "latest_result": self.latest_result,
                 "pending_approval": self.pending_approval,
                 "events": self.events[-120:],
+                "event_seq": self.event_seq,
             }
 
     def subscribe(self) -> queue.Queue[dict[str, Any]]:
@@ -180,15 +221,17 @@ class AppState:
                 self.clients.remove(client)
 
     def emit(self, event_type: str, payload: dict[str, Any]) -> None:
-        event = {"ts": now_iso(), "type": event_type, "payload": payload}
         with self.lock:
+            self.event_seq += 1
+            event = {"id": self.event_seq, "ts": now_iso(), "type": event_type, "payload": payload}
             self._apply_event(event_type, payload)
-            self.events.append(event)
+            public_event = _compact_ui_event(event)
+            self.events.append(public_event)
             self.events = self.events[-500:]
             clients = list(self.clients)
         for client in clients:
             try:
-                client.put_nowait(event)
+                client.put_nowait(public_event)
             except queue.Full:
                 pass
 

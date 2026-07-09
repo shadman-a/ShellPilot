@@ -269,6 +269,7 @@ class ShellPilotLoop:
                 approval_id = ""
                 approved = not approval_required and not inspect_blocked
                 if approval_required and not inspect_blocked:
+                    self._emit("step", {"step": f"Waiting for approval ({turn}/{self.max_turns})", "turn": turn})
                     approval_id = f"approval-{turn}-{uuid.uuid4().hex[:8]}"
                     approved = self.approval_callback(
                         approval_id,
@@ -308,6 +309,7 @@ class ShellPilotLoop:
                         shell=self.shell_kind,
                     )
                 elif is_script:
+                    self._emit("step", {"step": f"Running script ({turn}/{self.max_turns})", "turn": turn})
                     script_path = save_script(
                         self.output_paths,
                         turn=turn,
@@ -332,6 +334,7 @@ class ShellPilotLoop:
                         risk_reason=assessment.reason,
                     )
                 else:
+                    self._emit("step", {"step": f"Running command ({turn}/{self.max_turns})", "turn": turn})
                     command_result = self.runner.run(
                         command=decision.command,
                         cwd=workspace,
@@ -342,6 +345,7 @@ class ShellPilotLoop:
                         risk_reason=assessment.reason,
                     )
 
+                self._emit("step", {"step": f"Recording result ({turn}/{self.max_turns})", "turn": turn})
                 git_after = collect_git_state(workspace)
                 if command_result.ok and assessment.risk.value == "read_only":
                     inspected_ok = True

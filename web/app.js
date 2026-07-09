@@ -25,6 +25,9 @@ const els = {
   sessionStatus: document.getElementById("sessionStatus"),
   connectionPill: document.getElementById("connectionPill"),
   runStatus: document.getElementById("runStatus"),
+  activityStatus: document.getElementById("activityStatus"),
+  activityLabel: document.getElementById("activityLabel"),
+  activityElapsed: document.getElementById("activityElapsed"),
   turnStatus: document.getElementById("turnStatus"),
   runFolder: document.getElementById("runFolder"),
   activeProjectTitle: document.getElementById("activeProjectTitle"),
@@ -45,12 +48,54 @@ const els = {
   browseUseBtn: document.getElementById("browseUseBtn"),
 };
 
+const { getJson, postJson } = window.shellPilotResponse;
+
 let latestState = null;
 let initialized = false;
 let browserPath = "";
 let browserHome = "";
 let browserParent = "";
+let showAllTranscript = false;
+let reconnectRefreshTimer = null;
+let lastReconnectNotice = 0;
+let runStartedAt = 0;
+let lastRunDurationMs = 0;
+let activityTimer = null;
 const THEME_STORAGE_KEY = "shellpilot.theme";
+const COLLAPSED_PROJECTS_KEY = "shellpilot.collapsed-projects";
+const MAX_VISIBLE_TURNS = 24;
+const TRANSCRIPT_EVENT_TYPES = new Set([
+  "run_started",
+  "new_session",
+  "turn_result",
+  "approval_required",
+  "approval_answered",
+  "done",
+  "turn_error",
+  "run_error",
+  "stopped",
+  "max_turns",
+  "project_selected",
+  "session_loaded",
+]);
+const collapsedProjects = new Set(readCollapsedProjects());
+
+function readCollapsedProjects() {
+  try {
+    const value = JSON.parse(localStorage.getItem(COLLAPSED_PROJECTS_KEY) || "[]");
+    return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistCollapsedProjects() {
+  try {
+    localStorage.setItem(COLLAPSED_PROJECTS_KEY, JSON.stringify([...collapsedProjects]));
+  } catch {
+    // Sidebar preference persistence is optional.
+  }
+}
 
 function getSystemTheme() {
   return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -98,31 +143,15 @@ function toggleTheme() {
   applyTheme(next, "user");
 }
 
-async function postJson(path, payload = {}) {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error || "Request failed");
-  }
-  return data;
-}
-
-async function getJson(path) {
-  const response = await fetch(path, { cache: "no-store" });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.error || "Request failed");
-  }
-  return data;
-}
-
 async function fetchState() {
+  const started = performance.now();
   latestState = await getJson("/api/state");
+  showAllTranscript = false;
   renderState(latestState);
+  const duration = performance.now() - started;
+  if (duration >= 40) {
+    console.debug("[ShellPilot] ui_state_refresh", { duration_ms: Math.round(duration), event_count: (latestState.events || []).length });
+  }
 }
 
 function formPayload() {
@@ -149,12 +178,20 @@ function renderState(state) {
     initialized = true;
   }
 
+  renderRunChrome(state);
+  renderProjects(state);
+  renderTranscript(state);
+  renderEvents(state.events || []);
+}
+
+function renderRunChrome(state) {
   const sessionLabel = sessionText(state.session_status);
   els.sessionStatus.textContent = sessionLabel;
   els.connectionPill.textContent =
     sessionLabel === "Ready" || sessionLabel === "Opened" ? "Copilot Connected" : `Copilot ${sessionLabel}`;
   els.connectionPill.className = `status-pill ${sessionLabel === "Ready" || sessionLabel === "Opened" ? "ready" : "neutral"}`;
-  els.runStatus.textContent = state.running ? state.current_step || "Running" : "Idle";
+  const activity = friendlyStep(state.running ? state.current_step : state.current_step === "Idle" ? "Idle" : state.current_step);
+  els.runStatus.textContent = activity;
   els.turnStatus.textContent = `Turn ${state.current_turn || 0}`;
   els.runFolder.textContent = shortPath(state.run_folder || "(no artifacts)");
   els.runFolder.title = state.run_folder || "";
@@ -167,12 +204,168 @@ function renderState(state) {
   els.newProjectBtn.disabled = state.running;
   els.shellKindSelect.disabled = state.running;
 
+  renderActivity(state);
   renderApprovalMode(state.approval_mode || "ask", state.running);
-  renderHeader(state);
-  renderProjects(state);
   renderApproval(state.pending_approval);
-  renderTranscript(state);
-  renderEvents(state.events || []);
+  renderHeader(state);
+}
+
+function renderActivity(state) {
+  if (!els.activityStatus) return;
+  if (state.running && !runStartedAt) runStartedAt = Date.now();
+  if (!state.running && runStartedAt && !lastRunDurationMs) {
+    lastRunDurationMs = Date.now() - runStartedAt;
+  }
+
+  const label = state.running ? friendlyStep(state.current_step) : friendlyStep(state.current_step || "Idle");
+  const elapsed = state.running ? Date.now() - runStartedAt : lastRunDurationMs;
+  els.activityLabel.textContent = label;
+  els.activityElapsed.textContent = elapsed > 0 ? formatElapsed(elapsed) : "";
+  els.activityStatus.className = `activity-status ${state.running ? "running" : state.current_step === "Error" ? "error" : "neutral"}`;
+  els.activityStatus.title = state.running ? `${label}. Elapsed ${formatElapsed(elapsed)}.` : label;
+
+  if (state.running && !activityTimer) {
+    activityTimer = window.setInterval(() => {
+      if (latestState?.running) {
+        const currentElapsed = Date.now() - runStartedAt;
+        els.activityElapsed.textContent = formatElapsed(currentElapsed);
+        els.activityStatus.title = `${friendlyStep(latestState.current_step)}. Elapsed ${formatElapsed(currentElapsed)}.`;
+      }
+    }, 1000);
+  } else if (!state.running && activityTimer) {
+    window.clearInterval(activityTimer);
+    activityTimer = null;
+  }
+}
+
+function friendlyStep(step) {
+  const value = String(step || "Idle").replace(/\s+\(\d+\/\d+\)$/, "");
+  if (value === "Idle") return "Idle";
+  if (value.startsWith("Typing")) return "Preparing prompt";
+  if (value.startsWith("Waiting for approval")) return "Waiting for approval";
+  if (value.startsWith("Waiting")) return "Waiting for Copilot";
+  if (value.startsWith("Capturing")) return "Capturing response";
+  if (value.startsWith("Recovering")) return "Recovering connection";
+  if (value.startsWith("Refreshing chat")) return "Refreshing chat";
+  if (value.startsWith("Running script")) return "Running script";
+  if (value.startsWith("Running command")) return "Running command";
+  if (value.startsWith("Recording result")) return "Recording result";
+  if (value.startsWith("Saving")) return "Saving result";
+  return value;
+}
+
+function formatElapsed(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function applyLiveEvent(event) {
+  if (!latestState || !event || !event.type) {
+    fetchState().catch((error) => addLocalEvent("state_error", error.message));
+    return;
+  }
+  if (event.id && Number(event.id) <= Number(latestState.event_seq || 0)) return;
+
+  const started = performance.now();
+  latestState.event_seq = Math.max(Number(latestState.event_seq || 0), Number(event.id || 0));
+  latestState.events = [...(latestState.events || []), event].slice(-500);
+  applyEventToState(latestState, event);
+  renderRunChrome(latestState);
+  if (TRANSCRIPT_EVENT_TYPES.has(event.type)) {
+    renderTranscript(latestState);
+  }
+  renderEvents(latestState.events);
+  const duration = performance.now() - started;
+  if (duration >= 25) {
+    console.debug("[ShellPilot] ui_live_event", { type: event.type, duration_ms: Math.round(duration) });
+  }
+}
+
+function applyEventToState(state, event) {
+  const payload = event.payload || {};
+  switch (event.type) {
+    case "run_started":
+      state.running = true;
+      runStartedAt = Date.now();
+      lastRunDurationMs = 0;
+      state.current_turn = 0;
+      state.current_step = "Starting";
+      state.active_project_id = payload.project_id || state.active_project_id;
+      state.active_session_id = payload.session_id || state.active_session_id;
+      state.workspace_dir = payload.workspace_dir || state.workspace_dir;
+      state.run_folder = payload.run_folder || state.run_folder;
+      state.approval_mode = payload.approval_mode || state.approval_mode;
+      state.shell_kind = payload.shell_kind || state.shell_kind;
+      state.active_session = {
+        ...(state.active_session || {}),
+        session_id: state.active_session_id,
+        project_id: state.active_project_id,
+        title: payload.session_title || state.active_session?.title || "New chat",
+        status: "running",
+      };
+      showAllTranscript = false;
+      break;
+    case "session_status":
+      state.session_status = payload.status || state.session_status;
+      break;
+    case "turn_started":
+      state.current_turn = Number(payload.turn || state.current_turn || 0);
+      break;
+    case "step":
+      state.current_step = payload.step || state.current_step;
+      break;
+    case "approval_required":
+      state.pending_approval = payload;
+      break;
+    case "approval_answered":
+      state.pending_approval = null;
+      break;
+    case "turn_result":
+      state.current_turn = Number(payload.turn || state.current_turn || 0);
+      state.latest_command = payload.decision || null;
+      state.latest_result = payload.command_result || null;
+      break;
+    case "done":
+      state.current_step = "Done";
+      state.pending_approval = null;
+      break;
+    case "turn_error":
+    case "run_error":
+      state.current_step = "Error";
+      state.pending_approval = null;
+      break;
+    case "stopped":
+      state.current_step = "Stopped";
+      state.pending_approval = null;
+      break;
+    case "max_turns":
+      state.current_step = "Max turns";
+      state.pending_approval = null;
+      break;
+    case "run_finished":
+      state.running = false;
+      if (runStartedAt) lastRunDurationMs = Date.now() - runStartedAt;
+      state.current_step = "Idle";
+      state.pending_approval = null;
+      break;
+    case "new_session":
+      state.running = false;
+      runStartedAt = 0;
+      lastRunDurationMs = 0;
+      state.current_turn = 0;
+      state.current_step = "Idle";
+      state.pending_approval = null;
+      state.active_project_id = payload.project_id || state.active_project_id;
+      state.active_session_id = payload.session_id || state.active_session_id;
+      state.run_folder = payload.run_folder || state.run_folder;
+      state.events = [event];
+      showAllTranscript = false;
+      break;
+    default:
+      break;
+  }
 }
 
 function renderHeader(state) {
@@ -200,16 +393,34 @@ function renderProjects(state) {
   }
   for (const project of projects) {
     const wrapper = document.createElement("div");
-    wrapper.className = `project-group ${project.project_id === activeProjectId ? "active" : ""}`;
+    const isCollapsed = collapsedProjects.has(project.project_id);
+    wrapper.className = `project-group ${project.project_id === activeProjectId ? "active" : ""} ${isCollapsed ? "collapsed" : ""}`;
 
     const projectRow = document.createElement("div");
     projectRow.className = "project-row";
 
+    const toggleButton = document.createElement("button");
+    toggleButton.type = "button";
+    toggleButton.className = "project-toggle";
+    toggleButton.textContent = isCollapsed ? "▸" : "▾";
+    toggleButton.title = isCollapsed ? "Show chats" : "Hide chats";
+    toggleButton.setAttribute("aria-label", `${isCollapsed ? "Show" : "Hide"} chats for ${project.title || "project"}`);
+    toggleButton.setAttribute("aria-expanded", String(!isCollapsed));
+    toggleButton.addEventListener("click", () => {
+      if (collapsedProjects.has(project.project_id)) collapsedProjects.delete(project.project_id);
+      else collapsedProjects.add(project.project_id);
+      persistCollapsedProjects();
+      renderProjects(latestState || state);
+    });
+
     const button = document.createElement("button");
     button.type = "button";
     button.className = "project-button";
-    button.innerHTML = `<span class="project-icon">▣</span><span class="item-title"></span>`;
+    const sessions = projectSessions[project.project_id] || [];
+    const sessionCountLabel = sessions.length >= 8 ? "8+" : sessions.length ? String(sessions.length) : "";
+    button.innerHTML = `<span class="project-icon">▣</span><span class="item-title"></span><span class="item-count"></span>`;
     button.querySelector(".item-title").textContent = project.title || "Project";
+    button.querySelector(".item-count").textContent = sessionCountLabel;
     button.title = project.workspace_path || "";
     button.addEventListener("click", () => selectProject(project.project_id));
 
@@ -223,12 +434,11 @@ function renderProjects(state) {
       deleteProject(project);
     });
 
-    projectRow.append(button, deleteButton);
+    projectRow.append(toggleButton, button, deleteButton);
     wrapper.appendChild(projectRow);
 
-    const sessions = projectSessions[project.project_id] || [];
     const sessionList = document.createElement("div");
-    sessionList.className = "nested-session-list";
+    sessionList.className = `nested-session-list ${isCollapsed ? "collapsed" : ""}`;
     if (!sessions.length && project.project_id === activeProjectId) {
       sessionList.appendChild(emptyRow("No chats yet"));
     }
@@ -263,7 +473,12 @@ function renderProjects(state) {
 }
 
 function renderTranscript(state) {
-  const events = state.events || [];
+  const events = (state.events || []).filter((event) => TRANSCRIPT_EVENT_TYPES.has(event.type));
+  const runStart = events.find((event) => event.type === "run_started");
+  const detailEvents = events.filter((event) => event !== runStart);
+  const hiddenCount = Math.max(0, detailEvents.length - MAX_VISIBLE_TURNS);
+  const visibleEvents = showAllTranscript ? detailEvents : detailEvents.slice(-MAX_VISIBLE_TURNS);
+  const wasNearBottom = els.chatTranscript.scrollHeight - els.chatTranscript.scrollTop - els.chatTranscript.clientHeight < 120;
   els.chatTranscript.innerHTML = "";
 
   if (!events.length) {
@@ -282,10 +497,30 @@ function renderTranscript(state) {
     return;
   }
 
-  for (const event of events) {
+  if (runStart) {
+    appendEventMessage(runStart, state.pending_approval);
+  }
+  if (hiddenCount && !showAllTranscript) {
+    addTranscriptHistoryToggle(hiddenCount);
+  }
+  for (const event of visibleEvents) {
     appendEventMessage(event, state.pending_approval);
   }
-  els.chatTranscript.scrollTop = els.chatTranscript.scrollHeight;
+  if (wasNearBottom || !state.running) {
+    els.chatTranscript.scrollTop = els.chatTranscript.scrollHeight;
+  }
+}
+
+function addTranscriptHistoryToggle(hiddenCount) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "transcript-history-toggle";
+  button.textContent = `Show ${hiddenCount} older turn${hiddenCount === 1 ? "" : "s"}`;
+  button.addEventListener("click", () => {
+    showAllTranscript = true;
+    renderTranscript(latestState || { events: [] });
+  });
+  els.chatTranscript.appendChild(button);
 }
 
 function appendEventMessage(event, pendingApproval) {
@@ -674,11 +909,24 @@ async function loadSession(sessionId) {
 
 function wireEvents() {
   const source = new EventSource("/events");
-  source.addEventListener("message", () => {
-    fetchState().catch((error) => addLocalEvent("state_error", error.message));
+  source.addEventListener("message", (messageEvent) => {
+    try {
+      applyLiveEvent(JSON.parse(messageEvent.data));
+    } catch (error) {
+      addLocalEvent("event_error", `Could not process live event: ${error.message}`);
+    }
   });
   source.onerror = () => {
-    addLocalEvent("events", "Reconnecting to event stream...");
+    const now = Date.now();
+    if (now - lastReconnectNotice > 5000) {
+      lastReconnectNotice = now;
+      addLocalEvent("events", "Reconnecting to event stream...");
+    }
+    if (reconnectRefreshTimer) return;
+    reconnectRefreshTimer = window.setTimeout(() => {
+      reconnectRefreshTimer = null;
+      fetchState().catch((error) => addLocalEvent("state_error", error.message));
+    }, 750);
   };
 }
 
@@ -686,6 +934,7 @@ function addLocalEvent(type, message) {
   if (!latestState) return;
   latestState.events = latestState.events || [];
   latestState.events.push({ ts: new Date().toISOString().slice(0, 19), type, payload: { line: message } });
+  latestState.events = latestState.events.slice(-500);
   renderEvents(latestState.events);
 }
 

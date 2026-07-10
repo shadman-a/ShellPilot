@@ -28,6 +28,8 @@ const els = {
   activityStatus: document.getElementById("activityStatus"),
   activityLabel: document.getElementById("activityLabel"),
   activityElapsed: document.getElementById("activityElapsed"),
+  runModeToggle: document.getElementById("runModeToggle"),
+  runModeHelp: document.getElementById("runModeHelp"),
   turnStatus: document.getElementById("turnStatus"),
   runFolder: document.getElementById("runFolder"),
   activeProjectTitle: document.getElementById("activeProjectTitle"),
@@ -37,6 +39,14 @@ const els = {
   approvalPanel: document.getElementById("approvalPanel"),
   approvalReason: document.getElementById("approvalReason"),
   approvalCommand: document.getElementById("approvalCommand"),
+  planPanel: document.getElementById("planPanel"),
+  planTitle: document.getElementById("planTitle"),
+  planStatus: document.getElementById("planStatus"),
+  planRevision: document.getElementById("planRevision"),
+  planTasks: document.getElementById("planTasks"),
+  planActions: document.getElementById("planActions"),
+  planApproveBtn: document.getElementById("planApproveBtn"),
+  planRejectBtn: document.getElementById("planRejectBtn"),
   eventLog: document.getElementById("eventLog"),
   workspaceBrowser: document.getElementById("workspaceBrowser"),
   workspaceBrowserPath: document.getElementById("workspaceBrowserPath"),
@@ -75,6 +85,10 @@ const TRANSCRIPT_EVENT_TYPES = new Set([
   "run_error",
   "stopped",
   "max_turns",
+  "plan_replan_required",
+  "plan_rejected",
+  "plan_error",
+  "plan_completed",
   "project_selected",
   "session_loaded",
 ]);
@@ -167,6 +181,7 @@ function formPayload() {
     capture_timeout_s: Number(els.captureTimeoutInput.value || 15),
     approval_mode: selectedApprovalMode(),
     shell_kind: els.shellKindSelect.value || "bash",
+    run_mode: selectedRunMode(),
   };
 }
 
@@ -207,6 +222,8 @@ function renderRunChrome(state) {
   renderActivity(state);
   renderApprovalMode(state.approval_mode || "ask", state.running);
   renderApproval(state.pending_approval);
+  renderRunMode(state.run_mode || "direct", state.running);
+  renderPlan(state);
   renderHeader(state);
 }
 
@@ -247,6 +264,8 @@ function friendlyStep(step) {
   if (value.startsWith("Capturing")) return "Capturing response";
   if (value.startsWith("Recovering")) return "Recovering connection";
   if (value.startsWith("Refreshing chat")) return "Refreshing chat";
+  if (value.startsWith("Drafting plan")) return "Drafting plan";
+  if (value.startsWith("Replanning")) return "Updating plan";
   if (value.startsWith("Running script")) return "Running script";
   if (value.startsWith("Running command")) return "Running command";
   if (value.startsWith("Recording result")) return "Recording result";
@@ -298,6 +317,9 @@ function applyEventToState(state, event) {
       state.run_folder = payload.run_folder || state.run_folder;
       state.approval_mode = payload.approval_mode || state.approval_mode;
       state.shell_kind = payload.shell_kind || state.shell_kind;
+      state.run_mode = payload.run_mode || state.run_mode || "direct";
+      state.plan_state = null;
+      state.pending_plan = null;
       state.active_session = {
         ...(state.active_session || {}),
         session_id: state.active_session_id,
@@ -321,6 +343,41 @@ function applyEventToState(state, event) {
       break;
     case "approval_answered":
       state.pending_approval = null;
+      break;
+    case "plan_proposed":
+      state.plan_state = payload.plan || state.plan_state;
+      break;
+    case "plan_approval_required":
+      state.plan_state = payload.plan || state.plan_state;
+      state.pending_plan = payload;
+      break;
+    case "plan_answered":
+      state.pending_plan = null;
+      break;
+    case "plan_approved":
+      state.plan_state = payload.plan || state.plan_state;
+      state.pending_plan = null;
+      break;
+    case "plan_task_started":
+    case "plan_task_updated":
+      state.plan_state = payload.plan || state.plan_state;
+      break;
+    case "plan_replan_required":
+      state.current_step = "Replanning";
+      break;
+    case "plan_completed":
+      state.plan_state = payload.plan || state.plan_state;
+      state.current_step = "Plan complete";
+      state.pending_plan = null;
+      break;
+    case "plan_rejected":
+      if (payload.plan) state.plan_state = {...payload.plan, status:"rejected", reason:payload.reason || "Plan rejected."};
+      state.pending_plan = null;
+      state.current_step = "Plan rejected";
+      break;
+    case "plan_error":
+      state.current_step = "Error";
+      state.pending_plan = null;
       break;
     case "turn_result":
       state.current_turn = Number(payload.turn || state.current_turn || 0);
@@ -357,6 +414,9 @@ function applyEventToState(state, event) {
       state.current_turn = 0;
       state.current_step = "Idle";
       state.pending_approval = null;
+      state.pending_plan = null;
+      state.plan_state = null;
+      state.run_mode = "direct";
       state.active_project_id = payload.project_id || state.active_project_id;
       state.active_session_id = payload.session_id || state.active_session_id;
       state.run_folder = payload.run_folder || state.run_folder;
@@ -553,6 +613,26 @@ function appendEventMessage(event, pendingApproval) {
     return;
   }
 
+  if (event.type === "plan_replan_required") {
+    addSystemMessage("A task was blocked. ShellPilot is drafting a replacement plan.");
+    return;
+  }
+
+  if (event.type === "plan_rejected") {
+    addSystemMessage("Plan rejected. No commands were run from that plan.");
+    return;
+  }
+
+  if (event.type === "plan_error") {
+    addMessage("assistant error", "Plan error", `<pre>${escapeHtml(payload.error || "Could not create a plan.")}</pre>`);
+    return;
+  }
+
+  if (event.type === "plan_completed") {
+    addSystemMessage("Plan complete.");
+    return;
+  }
+
   if (event.type === "done") {
     const reason = (payload.decision && payload.decision.reason) || "Task complete.";
     addMessage("assistant", "ShellPilot", `<p>${escapeHtml(reason)}</p>`);
@@ -682,6 +762,81 @@ function renderApproval(pending) {
   els.approvalCommand.textContent = formatDecisionText(decision);
   els.approveBtn.dataset.id = pending.id;
   els.denyBtn.dataset.id = pending.id;
+}
+
+function selectedRunMode() {
+  const active = els.runModeToggle?.querySelector("button[aria-pressed='true']");
+  return active?.dataset.runMode || "direct";
+}
+
+function renderRunMode(mode, running) {
+  const selected = mode === "plan" ? "plan" : "direct";
+  for (const button of els.runModeToggle?.querySelectorAll("button") || []) {
+    const active = button.dataset.runMode === selected;
+    button.setAttribute("aria-pressed", String(active));
+    button.disabled = Boolean(running);
+  }
+  els.runModeHelp.textContent = selected === "plan"
+    ? "Draft a checklist, approve it once, then execute task by task."
+    : "Run one safe next command at a time.";
+}
+
+function renderPlan(state) {
+  const pending = state.pending_plan;
+  const plan = pending?.plan || state.plan_state;
+  if (!plan || !Array.isArray(plan.tasks) || !plan.tasks.length) {
+    els.planPanel.classList.add("hidden");
+    return;
+  }
+
+  els.planPanel.classList.remove("hidden");
+  const isPending = Boolean(pending);
+  const completed = plan.tasks.filter((task) => task.status === "completed").length;
+  const active = plan.tasks.find((task) => task.status === "in_progress");
+  const status = isPending
+    ? "Review and approve this checklist before execution."
+    : plan.status === "rejected"
+      ? "Plan rejected. No commands were run from it."
+    : plan.status === "completed"
+      ? "All planned tasks completed."
+      : active
+        ? `Task ${plan.tasks.indexOf(active) + 1} of ${plan.tasks.length} is in progress.`
+        : `${completed} of ${plan.tasks.length} tasks completed.`;
+  els.planTitle.textContent = isPending ? "Execution plan ready" : "Execution plan";
+  els.planStatus.textContent = status;
+  els.planRevision.textContent = `Revision ${plan.revision || 1}`;
+  els.planTasks.innerHTML = "";
+
+  for (const [index, task] of plan.tasks.entries()) {
+    const item = document.createElement("li");
+    const statusClass = task.status || "pending";
+    item.className = `plan-task ${statusClass}`;
+    const icon = task.status === "completed" ? "✓" : task.status === "in_progress" ? "•" : task.status === "blocked" ? "!" : "";
+    item.innerHTML = `
+      <span class="plan-task-icon" aria-hidden="true">${icon}</span>
+      <span class="plan-task-copy"><strong></strong><small></small></span>
+      <span class="plan-task-state"></span>
+    `;
+    item.querySelector("strong").textContent = task.title || `Task ${index + 1}`;
+    item.querySelector("small").textContent = task.detail || "";
+    item.querySelector("small").classList.toggle("hidden", !task.detail);
+    item.querySelector(".plan-task-state").textContent = task.status === "in_progress"
+      ? "Working"
+      : task.status === "completed"
+        ? "Done"
+        : task.status === "blocked"
+          ? "Blocked"
+          : "Next";
+    els.planTasks.appendChild(item);
+  }
+
+  els.planActions.classList.toggle("hidden", !isPending);
+  els.planApproveBtn.disabled = !isPending;
+  els.planRejectBtn.disabled = !isPending;
+  els.planApproveBtn.dataset.id = pending?.id || "";
+  els.planRejectBtn.dataset.id = pending?.id || "";
+  els.planApproveBtn.dataset.revision = pending?.revision || plan.revision || "";
+  els.planRejectBtn.dataset.revision = pending?.revision || plan.revision || "";
 }
 
 function renderEvents(events) {
@@ -1011,6 +1166,34 @@ els.denyBtn.addEventListener("click", async () => {
   await postJson("/api/approval", { id, approved: false });
   await fetchState();
 });
+
+els.runModeToggle.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-run-mode]");
+  if (!button || button.disabled) return;
+  for (const item of els.runModeToggle.querySelectorAll("button")) {
+    item.setAttribute("aria-pressed", String(item === button));
+  }
+});
+
+async function answerPlan(action, button) {
+  const id = button?.dataset.id;
+  if (!id) return;
+  button.disabled = true;
+  try {
+    await postJson("/api/plan", {
+      id,
+      action,
+      revision: Number(button.dataset.revision || 0),
+    });
+    await fetchState();
+  } catch (error) {
+    addLocalEvent("error", error.message);
+    await fetchState().catch(() => {});
+  }
+}
+
+els.planApproveBtn.addEventListener("click", () => answerPlan("approve", els.planApproveBtn));
+els.planRejectBtn.addEventListener("click", () => answerPlan("reject", els.planRejectBtn));
 
 els.chatTranscript.addEventListener("click", async (event) => {
   const approve = event.target.closest("[data-approve]");

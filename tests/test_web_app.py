@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from shellpilot import storage
-from shellpilot.models import ApprovalMode, CommandDecision, DecisionAction, RiskLevel, ShellKind
+from shellpilot.models import ApprovalMode, CommandDecision, DecisionAction, PlanDecision, PlanTask, RiskLevel, ShellKind
 from shellpilot.web_app import AppState
 
 
@@ -115,6 +115,40 @@ class WebAppStateTests(unittest.TestCase):
                 while state.to_json()["pending_approval"] is None:
                     pass
                 state.submit_approval({"id": "a1", "approved": True})
+                thread.join(timeout=2)
+            finally:
+                state.copilot.close()
+        self.assertEqual(result, [True])
+
+    def test_plan_approval_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = AppState(default_workspace=Path(temp_dir))
+            result: list[bool] = []
+            decision = PlanDecision(tasks=[PlanTask(task_id="task-1", title="Inspect workspace")], reason="test")
+
+            def waiter() -> None:
+                result.append(
+                    state.request_plan_approval(
+                        "plan-1",
+                        decision,
+                        {
+                            "revision": 1,
+                            "status": "awaiting_approval",
+                            "tasks": [
+                                {"task_id": "task-1", "title": "Inspect workspace", "status": "pending"}
+                            ],
+                            "active_task_id": "",
+                        },
+                    )
+                )
+
+            thread = threading.Thread(target=waiter)
+            thread.start()
+            try:
+                while state.to_json()["pending_plan"] is None:
+                    pass
+                pending = state.to_json()["pending_plan"]
+                state.submit_plan({"id": "plan-1", "revision": pending["revision"], "action": "approve"})
                 thread.join(timeout=2)
             finally:
                 state.copilot.close()

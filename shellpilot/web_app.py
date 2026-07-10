@@ -16,7 +16,16 @@ from urllib.parse import parse_qs, urlparse
 
 from .agent_loop import ShellPilotLoop
 from .copilot_connector import CopilotWorker
-from .models import DEFAULT_COPILOT_URL, DEFAULT_PROFILE_DIR, ApprovalMode, CommandDecision, RunConfig, ShellKind
+from .models import (
+    DEFAULT_COPILOT_URL,
+    DEFAULT_PROFILE_DIR,
+    ApprovalMode,
+    CommandDecision,
+    PlanDecision,
+    RunConfig,
+    RunMode,
+    ShellKind,
+)
 from .shell_runner import default_shell_kind
 from .storage import (
     create_session,
@@ -55,6 +64,14 @@ def _parse_shell_kind(value: Any) -> ShellKind:
         raise ValueError(f"Invalid command shell. Use one of: {valid}") from exc
 
 
+def _parse_run_mode(value: Any) -> RunMode:
+    try:
+        return RunMode(str(value or RunMode.DIRECT.value).strip())
+    except ValueError as exc:
+        valid = ", ".join(mode.value for mode in RunMode)
+        raise ValueError(f"Invalid run mode. Use one of: {valid}") from exc
+
+
 def _filesystem_roots() -> list[str]:
     if os.name == "nt":
         roots = [f"{letter}:\\" for letter in string.ascii_uppercase if Path(f"{letter}:\\").exists()]
@@ -67,7 +84,7 @@ def _task_title(task: str) -> str:
     return compact[:80] or "New chat"
 
 
-def _events_from_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _events_from_turns(turns: list[dict[str, Any]], run_mode: str = RunMode.DIRECT.value) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     if not turns:
         return events
@@ -80,6 +97,7 @@ def _events_from_turns(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "task": first.get("task") or "",
                 "workspace_dir": (first.get("git_before") or {}).get("workspace") or "",
                 "approval_mode": first.get("approval_mode") or "",
+                "run_mode": run_mode,
             },
         }
     )
@@ -149,6 +167,7 @@ class AppState:
         self.workspace_dir = str(default_workspace.expanduser().resolve())
         self.approval_mode = ApprovalMode.ASK
         self.shell_kind = default_shell_kind()
+        self.run_mode = RunMode.DIRECT
         project = ensure_project(self.workspace_dir)
         self.active_project_id = str(project["project_id"])
         self.active_session_id = ""
@@ -163,8 +182,11 @@ class AppState:
         self.latest_command: dict[str, Any] | None = None
         self.latest_result: dict[str, Any] | None = None
         self.pending_approval: dict[str, Any] | None = None
+        self.pending_plan: dict[str, Any] | None = None
+        self.plan_state: dict[str, Any] | None = None
         self._approval_condition = threading.Condition(self.lock)
         self._approval_answers: dict[str, bool] = {}
+        self._plan_answers: dict[str, bool] = {}
         self.events: list[dict[str, Any]] = []
         self.event_seq = 0
         if project.get("last_session_id"):
@@ -195,6 +217,7 @@ class AppState:
                 "project_sessions": project_sessions,
                 "approval_mode": self.approval_mode.value,
                 "shell_kind": self.shell_kind.value,
+                "run_mode": self.run_mode.value,
                 "available_shells": [shell.value for shell in ShellKind],
                 "session_status": self.session_status,
                 "selector_report": self.selector_report,
@@ -205,6 +228,8 @@ class AppState:
                 "latest_command": self.latest_command,
                 "latest_result": self.latest_result,
                 "pending_approval": self.pending_approval,
+                "pending_plan": self.pending_plan,
+                "plan_state": self.plan_state,
                 "events": self.events[-120:],
                 "event_seq": self.event_seq,
             }
@@ -281,6 +306,7 @@ class AppState:
             self.profile_dir = str(payload.get("profile_dir") or self.profile_dir).strip() or DEFAULT_PROFILE_DIR
             self.approval_mode = _parse_approval_mode(payload.get("approval_mode") or self.approval_mode.value)
             self.shell_kind = _parse_shell_kind(payload.get("shell_kind") or self.shell_kind.value)
+            self.run_mode = _parse_run_mode(payload.get("run_mode") or RunMode.DIRECT.value)
             self.stop_event = threading.Event()
             self.running = True
             self.current_turn = 0
@@ -288,9 +314,12 @@ class AppState:
             self.latest_command = None
             self.latest_result = None
             self.pending_approval = None
+            self.pending_plan = None
+            self.plan_state = None
+            self._plan_answers.clear()
             self.active_project_id = str(project["project_id"])
 
-        session, output_paths = self._prepare_session_for_run(project, workspace, task)
+        session, output_paths = self._prepare_session_for_run(project, workspace, task, self.run_mode)
         with self.lock:
             self.run_folder = str(output_paths.run_folder)
             self.active_session_id = str(session["session_id"])
@@ -306,6 +335,7 @@ class AppState:
                 "run_folder": str(output_paths.run_folder),
                 "approval_mode": self.approval_mode.value,
                 "shell_kind": self.shell_kind.value,
+                "run_mode": self.run_mode.value,
             },
         )
 
@@ -316,6 +346,7 @@ class AppState:
             capture_timeout_s=int(payload.get("capture_timeout_s") or 15),
             chat_refresh_turns=max(0, int(payload.get("chat_refresh_turns", 10) or 0)),
             retry_once=True,
+            run_mode=self.run_mode,
         )
         max_turns = int(payload.get("max_turns") or 100)
         command_timeout_s = int(payload.get("command_timeout_s") or 120)
@@ -327,6 +358,7 @@ class AppState:
                     output_paths=output_paths,
                     event_callback=self.emit,
                     approval_callback=self.request_approval,
+                    plan_approval_callback=self.request_plan_approval,
                     approval_mode=self.approval_mode,
                     shell_kind=self.shell_kind,
                     command_timeout_s=command_timeout_s,
@@ -340,6 +372,7 @@ class AppState:
                     self.running = False
                     self.current_step = "Idle"
                     self.pending_approval = None
+                    self.pending_plan = None
                 self._touch_active_session()
                 self.emit("run_finished", {"run_folder": str(output_paths.run_folder)})
 
@@ -356,9 +389,12 @@ class AppState:
         with self.lock:
             self.stop_event.set()
             pending = self.pending_approval
+            pending_plan = self.pending_plan
             if pending:
                 self._approval_answers[str(pending["id"])] = False
-                self._approval_condition.notify_all()
+            if pending_plan:
+                self._plan_answers[str(pending_plan["id"])] = False
+            self._approval_condition.notify_all()
         self.emit("stop_requested", {})
         return {"ok": True}
 
@@ -397,8 +433,12 @@ class AppState:
             self.latest_command = None
             self.latest_result = None
             self.pending_approval = None
+            self.pending_plan = None
+            self.plan_state = None
+            self.run_mode = RunMode.DIRECT
             self.selector_report = None
             self._approval_answers.clear()
+            self._plan_answers.clear()
             self.events = []
             self._approval_condition.notify_all()
             if copilot_chat:
@@ -412,6 +452,7 @@ class AppState:
                 "run_folder": self.run_folder,
                 "approval_mode": self.approval_mode.value,
                 "shell_kind": self.shell_kind.value,
+                "run_mode": self.run_mode.value,
                 "copilot_new_chat": bool(copilot_chat),
                 "copilot_chat": copilot_chat or {},
             },
@@ -620,11 +661,54 @@ class AppState:
                 self.pending_approval = None
             return approved
 
+    def submit_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        plan_id = str(payload.get("id") or "").strip()
+        action = str(payload.get("action") or "").strip().lower()
+        if not plan_id or action not in {"approve", "reject"}:
+            raise ValueError("Plan approval requires an id and action approve or reject.")
+        with self.lock:
+            pending = self.pending_plan
+            if not pending or pending.get("id") != plan_id:
+                raise ValueError("That plan approval is no longer pending.")
+            expected_revision = int(pending.get("revision") or 0)
+            supplied_revision = int(payload.get("revision") or expected_revision)
+            if supplied_revision != expected_revision:
+                raise ValueError("That plan revision is stale.")
+            self._plan_answers[plan_id] = action == "approve"
+            self.pending_plan = None
+            self._approval_condition.notify_all()
+        self.emit("plan_answered", {"id": plan_id, "approved": action == "approve"})
+        return {"ok": True, "approved": action == "approve"}
+
+    def request_plan_approval(
+        self,
+        plan_id: str,
+        decision: PlanDecision,
+        plan_payload: dict[str, Any],
+    ) -> bool:
+        request = {
+            "id": plan_id,
+            "revision": int(plan_payload.get("revision") or 0),
+            "plan": plan_payload,
+            "decision": decision.to_json_record(),
+        }
+        with self.lock:
+            self.pending_plan = request
+        self.emit("plan_approval_required", request)
+        with self._approval_condition:
+            while plan_id not in self._plan_answers and not self.stop_event.is_set():
+                self._approval_condition.wait(timeout=0.25)
+            approved = bool(self._plan_answers.pop(plan_id, False))
+            if self.pending_plan and self.pending_plan.get("id") == plan_id:
+                self.pending_plan = None
+            return approved
+
     def _prepare_session_for_run(
         self,
         project: dict[str, Any],
         workspace: Path,
         task: str,
+        run_mode: RunMode,
     ) -> tuple[dict[str, Any], OutputPaths]:
         project_id = str(project["project_id"])
         with self.lock:
@@ -643,6 +727,7 @@ class AppState:
                         workspace_path=str(workspace),
                         shell_kind=shell_kind,
                         approval_mode=approval_mode,
+                        run_mode=run_mode.value,
                         status="running",
                         turn_count=0,
                     )
@@ -655,8 +740,9 @@ class AppState:
             title=task,
             shell_kind=shell_kind,
             approval_mode=approval_mode,
+            run_mode=run_mode.value,
         )
-        session = update_session(project_id, str(session["session_id"]), status="running")
+        session = update_session(project_id, str(session["session_id"]), status="running", run_mode=run_mode.value)
         return session, paths
 
     def _load_session_locked(
@@ -673,13 +759,17 @@ class AppState:
 
         self.active_project_id = project_id
         self.active_session_id = session_id
+        self.run_mode = _parse_run_mode(payload.get("run_mode") or RunMode.DIRECT.value)
+        self.plan_state = payload.get("plan_state") if isinstance(payload.get("plan_state"), dict) else None
         self.run_folder = str(payload.get("run_folder") or output_paths_for_session(project_id, session_id).run_folder)
         turns = list(payload.get("turns") or [])
-        self.events = _events_from_turns(turns)
+        self.events = _events_from_turns(turns, self.run_mode.value)
         self.current_turn = int(turns[-1].get("turn") or 0) if turns else 0
         self.current_step = "Idle"
         self.pending_approval = None
+        self.pending_plan = None
         self._approval_answers.clear()
+        self._plan_answers.clear()
         latest = _latest_turn_with_result(turns)
         self.latest_command = latest.get("decision") if latest else None
         self.latest_result = latest.get("command_result") if latest else None
@@ -693,7 +783,11 @@ class AppState:
         self.latest_command = None
         self.latest_result = None
         self.pending_approval = None
+        self.pending_plan = None
+        self.plan_state = None
+        self.run_mode = RunMode.DIRECT
         self._approval_answers.clear()
+        self._plan_answers.clear()
         self.events = []
 
     def _touch_active_session(self, **fields: Any) -> None:
@@ -708,7 +802,10 @@ class AppState:
             return
 
     def _apply_event(self, event_type: str, payload: dict[str, Any]) -> None:
-        if event_type == "turn_started":
+        if event_type == "run_started":
+            self.run_mode = _parse_run_mode(payload.get("run_mode") or RunMode.DIRECT.value)
+            self._touch_active_session(status="running", run_mode=self.run_mode.value)
+        elif event_type == "turn_started":
             self.current_turn = int(payload.get("turn") or self.current_turn)
         elif event_type == "step":
             self.current_step = str(payload.get("step") or "")
@@ -719,6 +816,50 @@ class AppState:
                 status="running",
                 turn_count=self.current_turn,
                 run_memory=str(payload.get("run_memory") or ""),
+            )
+        elif event_type in {"plan_proposed", "plan_approval_required"}:
+            plan = payload.get("plan")
+            if isinstance(plan, dict):
+                self.plan_state = plan
+                self._touch_active_session(run_mode=RunMode.PLAN.value, plan_state=plan, status="running")
+        elif event_type == "plan_approved":
+            self.pending_plan = None
+            plan = payload.get("plan")
+            if isinstance(plan, dict):
+                self.plan_state = plan
+                self._touch_active_session(run_mode=RunMode.PLAN.value, plan_state=plan, status="running")
+        elif event_type == "plan_answered":
+            self.pending_plan = None
+        elif event_type == "plan_task_started" or event_type == "plan_task_updated":
+            plan = payload.get("plan")
+            if isinstance(plan, dict):
+                self.plan_state = plan
+                self._touch_active_session(run_mode=RunMode.PLAN.value, plan_state=plan, status="running")
+        elif event_type == "plan_replan_required":
+            self.current_step = "Replanning"
+            self._touch_active_session(status="replanning", run_mode=RunMode.PLAN.value, plan_state=self.plan_state)
+        elif event_type == "plan_rejected":
+            plan = payload.get("plan")
+            if isinstance(plan, dict):
+                self.plan_state = {**plan, "status": "rejected", "reason": str(payload.get("reason") or "Plan rejected.")}
+            self.current_step = "Plan rejected"
+            self._touch_active_session(
+                status="plan_rejected",
+                run_mode=RunMode.PLAN.value,
+                plan_state=self.plan_state,
+                turn_count=self.current_turn,
+            )
+        elif event_type == "plan_error":
+            self.current_step = "Error"
+            self._touch_active_session(status="error", run_mode=RunMode.PLAN.value, turn_count=self.current_turn)
+        elif event_type == "plan_completed":
+            self.plan_state = payload.get("plan") if isinstance(payload.get("plan"), dict) else self.plan_state
+            self.current_step = "Plan complete"
+            self._touch_active_session(
+                status="done",
+                run_mode=RunMode.PLAN.value,
+                plan_state=self.plan_state,
+                turn_count=self.current_turn,
             )
         elif event_type == "run_error":
             self.current_step = "Error"
@@ -806,6 +947,8 @@ class ShellPilotHandler(BaseHTTPRequestHandler):
                 result = self.state.set_approval_mode(payload)
             elif path == "/api/approval":
                 result = self.state.submit_approval(payload)
+            elif path == "/api/plan":
+                result = self.state.submit_plan(payload)
             elif path == "/api/browse_workspace":
                 result = self.state.browse_workspace(payload)
             else:

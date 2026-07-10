@@ -90,6 +90,10 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.hidden {
+  display: none !important;
+}
+
 button.secondary,
 button.icon-button {
   border-color: var(--line);
@@ -842,6 +846,193 @@ pre {
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px;
+}
+
+.plan-panel {
+  min-width: 0;
+  max-height: min(42dvh, 360px);
+  overflow: auto;
+  margin: 0 clamp(12px, 5vw, 72px) 12px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--green) 7%, var(--surface));
+}
+
+.plan-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.plan-header p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.plan-tasks {
+  display: grid;
+  gap: 7px;
+  margin: 13px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: plan-task;
+}
+
+.plan-task {
+  display: grid;
+  grid-template-columns: 26px 22px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--surface);
+  counter-increment: plan-task;
+}
+
+.plan-task::before {
+  content: counter(plan-task);
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.plan-task-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-weight: 850;
+  pointer-events: none;
+}
+
+.plan-task-copy {
+  min-width: 0;
+}
+
+.plan-task-copy strong,
+.plan-task-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-task-copy strong {
+  font-size: 13px;
+}
+
+.plan-task-copy small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.plan-task-state {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.plan-task.completed {
+  border-color: color-mix(in srgb, var(--green) 35%, var(--line));
+  background: var(--green-soft);
+}
+
+.plan-task.completed::before,
+.plan-task.completed .plan-task-icon {
+  background: var(--green);
+  color: white;
+}
+
+.plan-task.in_progress {
+  border-color: color-mix(in srgb, var(--purple) 48%, var(--line));
+  box-shadow: inset 3px 0 0 var(--purple);
+}
+
+.plan-task.in_progress .plan-task-icon {
+  background: var(--purple);
+  color: white;
+  animation: activity-pulse 1.2s ease-in-out infinite;
+}
+
+.plan-task.blocked {
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line));
+  background: color-mix(in srgb, var(--red) 7%, var(--surface));
+}
+
+.plan-task.blocked .plan-task-icon {
+  background: var(--red);
+  color: white;
+}
+
+.plan-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.composer-mode-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin: 0 2px 9px;
+}
+
+.composer-mode-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 780;
+  text-transform: uppercase;
+}
+
+.mode-toggle {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(76px, auto));
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+
+.mode-toggle button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-color: transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  box-shadow: none;
+}
+
+.mode-toggle button[aria-pressed="true"] {
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.composer-mode-row .mode-help {
+  margin: 0;
+  min-width: min(260px, 100%);
 }
 
 .composer-wrap {

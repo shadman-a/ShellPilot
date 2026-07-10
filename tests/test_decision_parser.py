@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from shellpilot.decision_parser import DecisionParseError, decision_prompt, parse_decision
-from shellpilot.models import DecisionAction, RiskLevel, ShellKind
+from shellpilot.models import DecisionAction, PlanDecision, RiskLevel, ShellKind
 
 
 class DecisionParserTests(unittest.TestCase):
@@ -68,6 +68,37 @@ class DecisionParserTests(unittest.TestCase):
         self.assertEqual(decision.action, DecisionAction.SCRIPT)
         self.assertEqual(decision.script_lines, ["pwd", "ls"])
         self.assertEqual(decision.risk, RiskLevel.READ_ONLY)
+
+    def test_parse_bounded_plan_decision(self) -> None:
+        decision = parse_decision(
+            '{"action":"plan","tasks":[{"title":"Inspect files","detail":"Find the relevant code."},{"title":"Apply the fix"}],"reason":"Work in two safe steps."}'
+        )
+        self.assertIsInstance(decision, PlanDecision)
+        self.assertEqual([task.task_id for task in decision.tasks], ["task-1", "task-2"])
+        self.assertEqual(decision.tasks[0].title, "Inspect files")
+
+    def test_plan_rejects_executable_task_content(self) -> None:
+        with self.assertRaises(DecisionParseError):
+            parse_decision('{"action":"plan","tasks":[{"title":"Run it","command":"rm -rf /"}]}')
+
+    def test_plan_rejects_more_than_six_tasks(self) -> None:
+        tasks = ",".join('{"title":"Task %s"}' % index for index in range(7))
+        with self.assertRaises(DecisionParseError):
+            parse_decision('{"action":"plan","tasks":[' + tasks + ']}')
+
+    def test_plan_execution_prompt_is_bounded(self) -> None:
+        git_state = {"is_git_repo": False, "workspace": "/tmp/work"}
+        context = "x" * 2000
+        prompt = decision_prompt(
+            task="test",
+            workspace="/tmp/work",
+            git_state=git_state,
+            previous_result=None,
+            turn=2,
+            plan_context=context,
+        )
+        plan_context = prompt.split("Plan context:\n", 1)[1].split("\n\nRules:", 1)[0]
+        self.assertLessEqual(len(plan_context), 600)
 
     def test_repair_clear_prose_command(self) -> None:
         decision = parse_decision("Run: `git status --short`")

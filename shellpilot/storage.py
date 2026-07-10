@@ -117,6 +117,7 @@ def create_session(
     title: str = "",
     shell_kind: str = "bash",
     approval_mode: str = "ask",
+    run_mode: str = "direct",
 ) -> tuple[dict[str, Any], dict[str, Any], OutputPaths]:
     project = ensure_project(workspace_dir)
     session_id = _new_session_id(project["project_id"])
@@ -135,6 +136,7 @@ def create_session(
         "workspace_path": project["workspace_path"],
         "shell_kind": shell_kind,
         "approval_mode": approval_mode,
+        "run_mode": run_mode,
         "created_at": now,
         "updated_at": now,
         "status": "new",

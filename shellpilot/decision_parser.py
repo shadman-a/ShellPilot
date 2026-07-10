@@ -4,14 +4,14 @@ import json
 import re
 from typing import Any
 
-from .models import CommandDecision, DecisionAction, RiskLevel, ShellKind
+from .models import CommandDecision, DecisionAction, PlanDecision, PlanTask, PlanTaskStatus, RiskLevel, ShellKind
 
 
 class DecisionParseError(ValueError):
     pass
 
 
-def parse_decision(text: str) -> CommandDecision:
+def parse_decision(text: str, *, max_plan_tasks: int = 6) -> CommandDecision | PlanDecision:
     try:
         blob, payload = _extract_latest_json_payload(text)
     except DecisionParseError:
@@ -26,11 +26,19 @@ def parse_decision(text: str) -> CommandDecision:
     try:
         action = DecisionAction(action_text)
     except ValueError as exc:
-        raise DecisionParseError("Decision action must be 'command', 'script', or 'done'.") from exc
+        raise DecisionParseError("Decision action must be 'command', 'script', 'done', or 'plan'.") from exc
 
     reason = str(payload.get("reason") or "").strip()
+    if action == DecisionAction.PLAN:
+        return _parse_plan_payload(payload, reason=reason, max_tasks=max_plan_tasks)
     if action == DecisionAction.DONE:
-        return CommandDecision(action=action, reason=reason or "Done.", raw=payload)
+        return CommandDecision(
+            action=action,
+            reason=reason or "Done.",
+            task_id=_task_id_from_payload(payload),
+            task_status=_task_status_from_payload(payload),
+            raw=payload,
+        )
 
     risk = _risk_from_payload(payload)
     if action == DecisionAction.SCRIPT:
@@ -42,6 +50,8 @@ def parse_decision(text: str) -> CommandDecision:
             script_lines=script_lines,
             risk=risk,
             reason=reason or "No reason supplied.",
+            task_id=_task_id_from_payload(payload),
+            task_status=_task_status_from_payload(payload),
             raw=payload,
         )
 
@@ -54,8 +64,58 @@ def parse_decision(text: str) -> CommandDecision:
         command=command,
         risk=risk,
         reason=reason or "No reason supplied.",
+        task_id=_task_id_from_payload(payload),
+        task_status=_task_status_from_payload(payload),
         raw=payload,
     )
+
+
+def _parse_plan_payload(payload: dict[str, Any], *, reason: str, max_tasks: int = 6) -> PlanDecision:
+    raw_tasks = payload.get("tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raise DecisionParseError("Plan decision must include a non-empty tasks array.")
+    max_tasks = min(6, max(1, int(max_tasks)))
+    if len(raw_tasks) > max_tasks:
+        raise DecisionParseError(f"Plan decision may contain at most {max_tasks} tasks.")
+
+    tasks: list[PlanTask] = []
+    for index, raw_task in enumerate(raw_tasks, start=1):
+        if not isinstance(raw_task, dict):
+            raise DecisionParseError("Each plan task must be an object.")
+        forbidden = {"command", "commands", "script", "script_lines", "shell"}
+        if forbidden.intersection(raw_task):
+            raise DecisionParseError("Plan tasks may describe work but may not contain executable commands or scripts.")
+        title = " ".join(str(raw_task.get("title") or raw_task.get("task") or "").split())
+        if not title:
+            raise DecisionParseError("Each plan task must include a non-empty title.")
+        if len(title) > 140:
+            raise DecisionParseError("Plan task titles must be 140 characters or fewer.")
+        detail = " ".join(str(raw_task.get("detail") or "").split())
+        if len(detail) > 180:
+            detail = detail[:177].rstrip() + "..."
+        tasks.append(PlanTask(task_id=f"task-{index}", title=title, detail=detail))
+    return PlanDecision(tasks=tasks, reason=reason or "Plan proposed.", raw=payload)
+
+
+def _task_id_from_payload(payload: dict[str, Any]) -> str:
+    value = payload.get("task_id")
+    if value is None:
+        return ""
+    task_id = str(value).strip()
+    if len(task_id) > 40:
+        raise DecisionParseError("task_id is too long.")
+    return task_id
+
+
+def _task_status_from_payload(payload: dict[str, Any]) -> str:
+    value = payload.get("task_status")
+    if value is None or str(value).strip() == "":
+        return ""
+    status = str(value).strip().lower()
+    try:
+        return PlanTaskStatus(status).value
+    except ValueError as exc:
+        raise DecisionParseError("task_status must be in_progress, completed, or blocked.") from exc
 
 
 def _risk_from_payload(payload: dict[str, Any]) -> RiskLevel:
@@ -315,6 +375,7 @@ def decision_prompt(
     turn: int,
     shell: ShellKind | str = ShellKind.BASH,
     run_memory: str = "",
+    plan_context: str = "",
 ) -> str:
     previous_json = json.dumps(_compact_previous_result(previous_result), ensure_ascii=False, separators=(",", ":"))
     include_git_details = _git_details_needed(task, previous_result)
@@ -327,6 +388,14 @@ def decision_prompt(
     shell_rules = _shell_rules(shell_kind)
     script_example = _script_example(shell_kind)
     run_memory_block = _run_memory_block(run_memory)
+    plan_context_block = _plan_context_block(plan_context)
+    plan_rules = ""
+    if plan_context_block:
+        plan_rules = (
+            "- You are executing the current plan task. Include task_id for the active task and set task_status "
+            "to in_progress, completed, or blocked.\n"
+            "- Do not switch tasks until the current task is completed or blocked.\n"
+        )
     return f"""
 You are ShellPilot. Return one local shell decision as strict JSON.
 
@@ -345,6 +414,7 @@ Git:
 Previous result:
 {previous_json}
 {run_memory_block}
+{plan_context_block}
 
 Rules:
 - Return exactly one JSON object and nothing else.
@@ -360,6 +430,8 @@ Rules:
 - Do not assume repo structure.
 - Use Git as the source of truth for status, diffs, and audit trail.
 - The local app will risk-check and approval-gate all non-read-only commands.
+- Plan execution:
+{plan_rules or '- This is direct mode; do not include task_id or task_status unless they are required by the task.\n'}
 - Avoid destructive, package install, process killing, and system-level commands.
 - Command action: one shell command only. No unquoted newlines, unquoted semicolons, &, &&, or ||. Pipes are allowed.
 - Script action: each script_lines item must follow the same one-command separator rules.
@@ -377,11 +449,67 @@ Turn: {turn}
 """.strip()
 
 
+def plan_prompt(
+    *,
+    task: str,
+    workspace: str,
+    git_state: dict[str, Any],
+    previous_result: dict[str, Any] | None = None,
+    plan_context: str = "",
+    shell: ShellKind | str = ShellKind.BASH,
+    revision: int = 1,
+) -> str:
+    shell_kind = ShellKind(shell)
+    git_json = json.dumps(_compact_git_state(git_state, include_details=False), ensure_ascii=False, separators=(",", ":"))
+    previous_json = json.dumps(_compact_previous_result(previous_result), ensure_ascii=False, separators=(",", ":"))
+    context_block = _plan_context_block(plan_context)
+    return f"""
+You are ShellPilot planning a local task. Return one strict JSON plan and nothing else.
+
+Workspace:
+{workspace}
+
+Shell:
+{shell_kind.value}
+
+Task:
+{task}
+
+Git:
+{git_json}
+
+Previous result:
+{previous_json}
+{context_block}
+
+Rules:
+- Return exactly one JSON object with action "plan".
+- Include 1 to 6 ordered tasks.
+- Each task must contain a short title and may contain a concise detail.
+- Describe outcomes, not shell commands, scripts, code blocks, or executable strings.
+- Keep tasks concrete, sequential, and small enough to execute one command or script decision at a time.
+- Do not include hidden reasoning, commentary, markdown, or extra keys that contain commands.
+- If replanning, preserve completed work and propose only the remaining safe work.
+
+Valid JSON:
+{{"action":"plan","tasks":[{{"title":"Inspect the relevant files","detail":"Confirm the current structure."}}],"reason":"A short planning rationale."}}
+
+Plan revision: {revision}
+""".strip()
+
+
 def _run_memory_block(run_memory: str) -> str:
     memory = str(run_memory or "").strip()
     if not memory:
         return ""
     return f"\nRun memory:\n{memory}"
+
+
+def _plan_context_block(plan_context: str) -> str:
+    context = str(plan_context or "").strip()
+    if not context:
+        return ""
+    return f"\nPlan context:\n{context[:600]}"
 
 
 def _shell_rules(shell: ShellKind) -> dict[str, str]:

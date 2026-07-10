@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from shellpilot import storage
 from shellpilot.agent_loop import ShellPilotLoop
-from shellpilot.models import ApprovalMode, PromptResult, RunConfig, ShellKind
+from shellpilot.models import ApprovalMode, PromptResult, RunConfig, RunMode, ShellKind
 
 
 class FakeCopilot:
@@ -334,6 +334,93 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("note.txt", records[0]["git_before"]["status_short"])
         self.assertIn("note.txt", records[0]["git_after"]["status_short"])
         self.assertTrue(any(event == "turn_result" for event, _ in events))
+
+    def test_plan_mode_approves_and_completes_task_with_checklist_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "repo"
+            workspace.mkdir()
+            app_data = Path(temp_dir) / "app" / ".shellpilot"
+            with (
+                patch.object(storage, "APP_DATA_ROOT", app_data),
+                patch.object(storage, "PROJECTS_ROOT", app_data / "projects"),
+            ):
+                _, _, paths = storage.create_session(workspace, title="Plan")
+                fake_copilot = FakeCopilot(
+                    [
+                        '{"action":"plan","tasks":[{"title":"Inspect the workspace"}],"reason":"Start safely."}',
+                        '{"action":"command","command":"pwd","risk":"read_only","task_id":"task-1","task_status":"completed","reason":"Inspection complete."}',
+                    ]
+                )
+                events: list[tuple[str, dict[str, Any]]] = []
+                loop = ShellPilotLoop(
+                    copilot=fake_copilot,
+                    output_paths=paths,
+                    event_callback=lambda event, payload: events.append((event, payload)),
+                    approval_callback=lambda *_: True,
+                    plan_approval_callback=lambda *_: True,
+                    approval_mode=ApprovalMode.FULL_ACCESS,
+                    shell_kind=ShellKind.BASH,
+                    max_turns=100,
+                )
+
+                loop.run(
+                    task="inspect workspace",
+                    workspace_dir=workspace,
+                    run_config=RunConfig(run_mode=RunMode.PLAN),
+                    stop_event=threading.Event(),
+                )
+
+        event_names = [event for event, _ in events]
+        self.assertIn("plan_proposed", event_names)
+        self.assertIn("plan_approved", event_names)
+        self.assertIn("plan_task_started", event_names)
+        self.assertIn("plan_task_updated", event_names)
+        self.assertIn("plan_completed", event_names)
+        self.assertEqual(len(fake_copilot.prompts), 2)
+        self.assertIn("Plan context:", fake_copilot.prompts[1])
+        self.assertIn("active=task-1", fake_copilot.prompts[1])
+
+    def test_plan_mode_replans_after_failed_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "repo"
+            workspace.mkdir()
+            app_data = Path(temp_dir) / "app" / ".shellpilot"
+            with (
+                patch.object(storage, "APP_DATA_ROOT", app_data),
+                patch.object(storage, "PROJECTS_ROOT", app_data / "projects"),
+            ):
+                _, _, paths = storage.create_session(workspace, title="Replan")
+                fake_copilot = FakeCopilot(
+                    [
+                        '{"action":"plan","tasks":[{"title":"Try the first inspection"}],"reason":"Initial plan."}',
+                        '{"action":"command","command":"false","risk":"read_only","task_id":"task-1","task_status":"completed","reason":"Try it."}',
+                        '{"action":"plan","tasks":[{"title":"Use a safer inspection"}],"reason":"Recover from the failed command."}',
+                        '{"action":"command","command":"pwd","risk":"read_only","task_id":"task-1","task_status":"completed","reason":"Recovered."}',
+                    ]
+                )
+                events: list[tuple[str, dict[str, Any]]] = []
+                loop = ShellPilotLoop(
+                    copilot=fake_copilot,
+                    output_paths=paths,
+                    event_callback=lambda event, payload: events.append((event, payload)),
+                    approval_callback=lambda *_: True,
+                    plan_approval_callback=lambda *_: True,
+                    approval_mode=ApprovalMode.FULL_ACCESS,
+                    shell_kind=ShellKind.BASH,
+                    max_turns=3,
+                )
+
+                loop.run(
+                    task="inspect workspace",
+                    workspace_dir=workspace,
+                    run_config=RunConfig(run_mode=RunMode.PLAN),
+                    stop_event=threading.Event(),
+                )
+
+        event_names = [event for event, _ in events]
+        self.assertIn("plan_replan_required", event_names)
+        self.assertGreaterEqual(event_names.count("plan_proposed"), 2)
+        self.assertIn("plan_completed", event_names)
 
 
 if __name__ == "__main__":

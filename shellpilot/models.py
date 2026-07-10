@@ -30,10 +30,23 @@ class ShellKind(StrEnum):
     CMD = "cmd"
 
 
+class RunMode(StrEnum):
+    DIRECT = "direct"
+    PLAN = "plan"
+
+
+class PlanTaskStatus(StrEnum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+
+
 class DecisionAction(StrEnum):
     COMMAND = "command"
     SCRIPT = "script"
     DONE = "done"
+    PLAN = "plan"
 
 
 @dataclass(slots=True)
@@ -52,6 +65,9 @@ class RunConfig:
     no_activity_timeout_s: float = 20.0
     run_memory_chars: int = 1000
     stuck_recovery_threshold: int = 2
+    run_mode: RunMode = RunMode.DIRECT
+    max_plan_tasks: int = 6
+    max_plan_revisions: int = 3
 
 
 @dataclass(slots=True)
@@ -121,6 +137,8 @@ class CommandDecision:
     script_lines: list[str] = field(default_factory=list)
     risk: RiskLevel = RiskLevel.READ_ONLY
     reason: str = ""
+    task_id: str = ""
+    task_status: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
     def to_json_record(self) -> dict[str, Any]:
@@ -128,6 +146,56 @@ class CommandDecision:
         payload["action"] = self.action.value
         payload["risk"] = self.risk.value
         return payload
+
+
+@dataclass(slots=True)
+class PlanTask:
+    task_id: str
+    title: str
+    status: PlanTaskStatus = PlanTaskStatus.PENDING
+    detail: str = ""
+
+    def to_json_record(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "title": self.title,
+            "status": self.status.value,
+            **({"detail": self.detail} if self.detail else {}),
+        }
+
+
+@dataclass(slots=True)
+class PlanState:
+    revision: int
+    status: str
+    tasks: list[PlanTask] = field(default_factory=list)
+    active_task_id: str = ""
+    reason: str = ""
+
+    def to_json_record(self) -> dict[str, Any]:
+        return {
+            "revision": self.revision,
+            "status": self.status,
+            "tasks": [task.to_json_record() for task in self.tasks],
+            "active_task_id": self.active_task_id,
+            **({"reason": self.reason} if self.reason else {}),
+        }
+
+
+@dataclass(slots=True)
+class PlanDecision:
+    tasks: list[PlanTask] = field(default_factory=list)
+    reason: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+    action: DecisionAction = DecisionAction.PLAN
+
+    def to_json_record(self) -> dict[str, Any]:
+        return {
+            "action": self.action.value,
+            "tasks": [task.to_json_record() for task in self.tasks],
+            "reason": self.reason,
+            **({"raw": self.raw} if self.raw else {}),
+        }
 
 
 @dataclass(slots=True)
@@ -205,6 +273,10 @@ class TurnRecord:
     run_memory: str = ""
     done: bool = False
     error: str = ""
+    run_mode: str = RunMode.DIRECT.value
+    plan_revision: int = 0
+    plan_task_id: str = ""
+    plan_task_status: str = ""
 
     def to_json_record(self) -> dict[str, Any]:
         return asdict(self)

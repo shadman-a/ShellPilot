@@ -6,8 +6,8 @@ It is based on the working SuperPilot proof of concept, but narrowed down:
 
 - Same real Copilot browser automation backend with Playwright.
 - Same persistent browser profile idea, so Microsoft login, SSO, and MFA happen manually in the browser and are reused.
-- No multi-agent planning, fake IDE, vector database, file-generation workflow, or broad tool protocol.
-- One Copilot turn proposes exactly one command for the selected local shell.
+- No multi-agent orchestration, fake IDE, vector database, file-generation workflow, or broad tool protocol.
+- Direct mode uses one Copilot turn per local command. Optional Plan first mode creates a bounded checklist, waits for approval, and then executes one task at a time.
 - ShellPilot risk-checks the command, applies the selected approval mode, captures the result, records Git state, and sends the result back to Copilot.
 - Each selected workspace path is treated as a project, and each run/new session is saved as a chat under that project.
 
@@ -41,6 +41,8 @@ http://127.0.0.1:8765/
 5. Enter a task and click **Run**.
 
 Use **Approval mode** beside the task prompt to choose how much ShellPilot asks before running commands. **New Chat** creates a new local chat under the current project, clears the active transcript, and starts a fresh Copilot chat thread if Copilot is open while keeping the browser login/profile intact.
+
+Use **Plan first** beside the task prompt when the work has multiple dependent steps. ShellPilot shows up to six ordered tasks with an active loader and completion checkmarks, waits for one checklist approval, and keeps the existing command risk and approval rules for every execution. Rejecting a plan stops the run without executing it. Failed or blocked tasks pause execution and trigger a replacement plan proposal for the remaining work.
 
 For longer runs, **Refresh chat every** starts a fresh Copilot chat after the selected number of turns while preserving ShellPilot's local task, Git state, and previous command result in the next prompt. The default is 10 turns to avoid slow or stuck Copilot threads during extended sessions.
 

@@ -96,8 +96,31 @@
           </div>
         </section>
 
+        <section id="planPanel" class="plan-panel hidden" aria-live="polite">
+          <div class="plan-header">
+            <div>
+              <strong id="planTitle">Execution plan</strong>
+              <p id="planStatus">Preparing a checklist...</p>
+            </div>
+            <span id="planRevision" class="chip muted"></span>
+          </div>
+          <ol id="planTasks" class="plan-tasks"></ol>
+          <div id="planActions" class="plan-actions hidden">
+            <button id="planRejectBtn" class="secondary" type="button">Reject plan</button>
+            <button id="planApproveBtn" type="button">Approve plan</button>
+          </div>
+        </section>
+
         <footer class="composer-wrap">
           <div class="composer">
+            <div class="composer-mode-row">
+              <span class="composer-mode-label">Execution mode</span>
+              <div id="runModeToggle" class="mode-toggle" role="group" aria-label="Execution mode">
+                <button type="button" data-run-mode="direct" aria-pressed="true">Direct</button>
+                <button type="button" data-run-mode="plan" aria-pressed="false">Plan first</button>
+              </div>
+              <span id="runModeHelp" class="mode-help">Run one safe next command at a time.</span>
+            </div>
             <textarea id="taskInput" rows="2" placeholder="Message ShellPilot with a task..."></textarea>
             <div class="composer-controls">
               <div id="composerProject" class="project-context" title="">
